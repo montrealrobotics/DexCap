@@ -24,13 +24,27 @@ In this repo, we provide our full implementation code for [Data processing](#dat
 
 -------
 ## Installation
+
+```
+mkdir -p ~/dexcap_ws/src
+git clone git@github.com:montrealrobotics/DexCap.git
+git clone git@github.com:montrealrobotics/deoxys_control.git
+```
+
 The first step is to install and build environments for the Ubuntu workstation, which could also be a headless server for dataset building, training and testing. Simply follow:
 ```	
-conda create -n arcap python=3.8
-conda activate arcap
-cd install/
-pip install -r env_ws_requirements.txt
-cd STEP2_train_policy
+cd ~/dexcap_ws/src/DexCap
+conda env create -f environment.yml
+conda activate dexcap
+```
+Then install the deoxys controller
+
+```
+cd ~/dexcap_ws/src/deoxys_control/deoxys
+./InstallPackage
+make -j build_deoxys=1
+pip install -e .
+cd protobuf/python
 pip install -e .
 ```
 

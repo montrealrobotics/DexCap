@@ -13,10 +13,10 @@ import pybullet as pb
 
 from glob import glob
 from scipy.spatial.transform import Rotation
-from gprs.franka_interface import FrankaInterface
+from deoxys.franka_interface import FrankaInterface
 # from gprs.utils.io_devices import SpaceMouse
 # from gprs.utils.input_utils import input2action
-from gprs.utils import YamlConfig
+from deoxys.utils import YamlConfig
 
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.torch_utils as TorchUtils

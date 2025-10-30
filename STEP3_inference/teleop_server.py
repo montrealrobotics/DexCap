@@ -13,8 +13,8 @@ from quest_robot_module import QuestRightArmLeapModule
 # Robot deployment imports
 import redis
 import pickle
-from gprs.franka_interface import FrankaInterface
-from gprs.utils import YamlConfig
+from deoxys.franka_interface import FrankaInterface
+from deoxys.utils import YamlConfig
 
 def convert_to_hardware(joint_angles):
     real_right_robot_hand_q = np.zeros(16)
@@ -30,9 +30,9 @@ def init_robot(redis_client, robot_interface):
     hand_target = [0.0 for _ in range(16)]
     redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
 
-    controller_cfg = YamlConfig("robot_config/joint-impedance-controller.yml").as_easydict()
+    impedance_controller_cfg = YamlConfig("robot_config/joint-impedance-controller.yml").as_easydict()
+    position_controller_cfg = YamlConfig("robot_config/joint-position-controller.yml").as_easydict()
     robot_interface._state_buffer = []
-
 
     # first reset the arm to a initial pose
     fixed_joints = [
@@ -47,14 +47,13 @@ def init_robot(redis_client, robot_interface):
     paper_q = [0.0 for _ in range(16)]
     for _ in range(10):
         robot_interface.control(
-            control_type="JOINT_POSITION",
+            controller_type="JOINT_POSITION",
             action=fixed_joints,
-            mode=0.0,
-            controller_cfg=robot_interface,
+            controller_cfg=position_controller_cfg,
         )
         time.sleep(0.5)
         redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
-    return controller_cfg
+    return impedance_controller_cfg
 
 
 if __name__ == "__main__":
@@ -100,9 +99,8 @@ if __name__ == "__main__":
                 right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)
                 quest.send_ik_result(right_arm_q, right_hand_q)
                 if quest.data_dir is not None:
-                    message = robot_interface.control(control_type="JOINT_IMPEDANCE",
+                    message = robot_interface.control(controller_type="JOINT_IMPEDANCE",
                                                     action=right_arm_q,
-                                                    mode=0.0,
                                                     controller_cfg=controller_cfg)
                     redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
         except socket.error as e:

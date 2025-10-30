@@ -18,10 +18,10 @@ from RobotTeleop.utils import Rate, RateMeasure, Timers
 
 try:
     # GPRS imports
-    from gprs.franka_interface import FrankaInterface
-    from gprs.camera_redis_interface import CameraRedisSubInterface
-    from gprs.utils import YamlConfig
-    from gprs import config_root
+    from deoxys.franka_interface import FrankaInterface
+    from deoxys.camera_redis_interface import CameraRedisSubInterface
+    from deoxys.utils import YamlConfig
+    from deoxys import config_root
 
     from rpl_vision_utils.utils import img_utils as ImgUtils
 except ImportError:
