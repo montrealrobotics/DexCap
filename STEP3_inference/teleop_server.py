@@ -28,7 +28,7 @@ def convert_to_hardware(joint_angles):
 
 def init_robot(redis_client, robot_interface):
     hand_target = [0.0 for _ in range(16)]
-    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
+    redis_client.set('right_leap_action', pickle.dumps(hand_target))
 
     impedance_controller_cfg = YamlConfig("robot_config/joint-impedance-controller.yml").as_easydict()
     position_controller_cfg = YamlConfig("robot_config/joint-position-controller.yml").as_easydict()
@@ -52,7 +52,7 @@ def init_robot(redis_client, robot_interface):
             controller_cfg=position_controller_cfg,
         )
         time.sleep(0.5)
-        redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
+        redis_client.set('right_leap_action', pickle.dumps(paper_q))
     return impedance_controller_cfg
 
 
@@ -65,8 +65,8 @@ if __name__ == "__main__":
     c_code = c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
     for i in range(4):
         vis_sp.append(create_primitive_shape(pb, 0.1, pb.GEOM_SPHERE, [0.02], color=c_code[i]))
-    redis_client = redis.Redis(host='localhost',port=6669, db=0)
-    robot_interface = FrankaInterface('robot_config/alice.yml', use_visualizer=False, has_gripper=False)
+    redis_client = redis.Redis(host='172.16.0.3',port=6669, db=0)
+    robot_interface = FrankaInterface('robot_config/charmander.yml', use_visualizer=False, has_gripper=False)
     controller_cfg = init_robot(redis_client, robot_interface)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
     rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
@@ -102,7 +102,7 @@ if __name__ == "__main__":
                     message = robot_interface.control(controller_type="JOINT_IMPEDANCE",
                                                     action=right_arm_q,
                                                     controller_cfg=controller_cfg)
-                    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
+                    redis_client.set('right_leap_action', pickle.dumps(right_hand_q))
         except socket.error as e:
             print(e)
             pass

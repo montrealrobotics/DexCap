@@ -1,11 +1,11 @@
 PC:
-  NAME: "rosie"
-  IP: 172.16.0.4
+  NAME: "kristy"
+  IP: 172.16.0.2
   # PUB_PORT: 5555
   # SUB_PORT: 5556
 
 NUC:
-  NAME: "alice"
+  NAME: "droid"
   IP: 172.16.0.3
   PUB_PORT: 5558
   SUB_PORT: 5557
@@ -13,7 +13,7 @@ NUC:
   GRIPPER_SUB_PORT: 5559
 
 ROBOT:
-  IP: 172.16.0.6
+  IP: 172.16.0.1
 
 
 control:
