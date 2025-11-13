@@ -29,6 +29,7 @@ In this repo, we provide our full implementation code for [Data processing](#dat
 mkdir -p ~/dexcap_ws/src
 git clone git@github.com:montrealrobotics/DexCap.git
 git clone git@github.com:montrealrobotics/deoxys_control.git
+git clone git@github.com:montrealrobotics/LEAP_Hand_API.git
 ```
 
 The first step is to install and build environments for the Ubuntu workstation, which could also be a headless server for dataset building, training and testing. Simply follow:
@@ -47,6 +48,23 @@ pip install -e .
 cd protobuf/python
 pip install -e .
 ```
+
+## Teleop
+
+Start a docker container for the leap hand following the readme in the leap repo. Use the ros2 version.
+In the docker container launch the following to start listening to hand commands:
+```
+ros2 launch leap_hand launch_leap.py
+```
+
+To start the teleop server:
+```
+cd ~/dexcap_ws/src/DexCap/STEP3_inference
+python teleop_server.py
+```
+
+Running the robot control code on the NUC:
+COMING SOON
 
 -------
 ## Data Collection
