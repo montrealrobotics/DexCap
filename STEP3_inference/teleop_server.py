@@ -23,12 +23,12 @@ def convert_to_hardware(joint_angles):
     real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
     real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
     real_right_robot_hand_q[:16] += np.pi
-    return real_right_robot_hand_q
+    return real_right_robot_hand_q.tolist()
 
 
 def init_robot(redis_client, robot_interface):
     hand_target = [0.0 for _ in range(16)]
-    redis_client.set('right_leap_action', pickle.dumps(hand_target))
+    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
 
     impedance_controller_cfg = YamlConfig("robot_config/joint-impedance-controller.yml").as_easydict()
     position_controller_cfg = YamlConfig("robot_config/joint-position-controller.yml").as_easydict()
@@ -52,7 +52,7 @@ def init_robot(redis_client, robot_interface):
             controller_cfg=position_controller_cfg,
         )
         time.sleep(0.5)
-        redis_client.set('right_leap_action', pickle.dumps(paper_q))
+        redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
     return impedance_controller_cfg
 
 
@@ -102,7 +102,7 @@ if __name__ == "__main__":
                     message = robot_interface.control(controller_type="JOINT_IMPEDANCE",
                                                     action=right_arm_q,
                                                     controller_cfg=controller_cfg)
-                    redis_client.set('right_leap_action', pickle.dumps(right_hand_q))
+                    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
         except socket.error as e:
             print(e)
             pass
