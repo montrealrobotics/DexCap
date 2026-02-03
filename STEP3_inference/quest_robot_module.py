@@ -70,13 +70,12 @@ class QuestRobotModule:
             self.ik_result_s.close()
 
 class QuestRightArmLeapModule(QuestRobotModule):
-    RIGHT_REST = [0.4,
-                -0.49826458111314524,
-                -0.01990020486871322,
-                -2.4732269941140346,
-                -0.01307073642274261,
-                2.00396583422025,
-                1.1980939705504309]
+    RIGHT_REST = [0.0,
+                -2.047,
+                -0.5173752903938293,
+                -0.0006711165769957006,
+                1.3967028856277466,
+                -0.0008034224156290293]
 
     RIGHT_HAND_Q = [np.pi / 6, -np.pi / 6, np.pi / 3, np.pi / 6,
               np.pi / 6, 0.0, np.pi / 3, np.pi / 6,
@@ -98,7 +97,7 @@ class QuestRightArmLeapModule(QuestRobotModule):
         super().__init__(vr_ip, local_ip, pose_cmd_port, ik_result_port)
         self.vis_sp = vis_sp
         # Initialize robots
-        self.right_arm = pb.loadURDF("assets/franka_arm/panda_leap.urdf", basePosition=[0.0, 0.0, 0.0], baseOrientation=[0, 0, 0.7071068, 0.7071068], useFixedBase=True)
+        self.right_arm = pb.loadURDF("assets/xarm_arm/xarm6_robot.urdf", basePosition=[0.0, 0.0, 0.0], baseOrientation=[0, 0, 0.7071068, 0.7071068], useFixedBase=True)
         self.right_hand = pb.loadURDF("assets/leap_hand/robot_pybullet.urdf")
         self.set_joint_positions(self.right_arm, QuestRightArmLeapModule.RIGHT_REST)
         self.set_joint_positions(self.right_hand, QuestRightArmLeapModule.RIGHT_HAND_Q)

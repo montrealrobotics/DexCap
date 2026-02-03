@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 from ip_config import *
 #from rokoko_module import RokokoModule
 #from realsense_module import DepthCameraModule
-#from quest_robot_module import QuestRightArmLeapModule
+from quest_robot_module import QuestRightArmLeapModule
 
 # Robot deployment imports
 import redis
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     init_robot(redis_client, robot_interface)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
     #rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
-    #quest = QuestRightArmLeapModule(VR_HOST, LOCAL_HOST, POSE_CMD_PORT, IK_RESULT_PORT, vis_sp=None)
+    quest = QuestRightArmLeapModule(VR_HOST, LOCAL_HOST, POSE_CMD_PORT, IK_RESULT_PORT, vis_sp=None)
 
     start_time = time.time()
     fps_counter = 0
