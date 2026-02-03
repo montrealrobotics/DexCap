@@ -11,9 +11,9 @@ from ip_config import *
 #from quest_robot_module import QuestRightArmLeapModule
 
 # Robot deployment imports
-#import redis
+import redis
 import pickle
-from deoxys.xarm_interface import XArm6Interface
+from deoxys.xarm_interface import XArmInterface
 from deoxys.utils import YamlConfig
 
 def convert_to_hardware(joint_angles):
@@ -26,9 +26,9 @@ def convert_to_hardware(joint_angles):
     return real_right_robot_hand_q.tolist()
 
 
-def init_robot(robot_interface):
+def init_robot(redis_client, robot_interface):
     hand_target = [0.0 for _ in range(16)]
-    #redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
+    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
 
     robot_interface._state_buffer = []
 
@@ -48,7 +48,8 @@ def init_robot(robot_interface):
             action=fixed_joints
         )
         time.sleep(0.5)
-        #redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
+        redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
+    print("Initial position sent")
     return
 
 
@@ -61,9 +62,11 @@ if __name__ == "__main__":
     #c_code = c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
     #for i in range(4):
     #    vis_sp.append(create_primitive_shape(pb, 0.1, pb.GEOM_SPHERE, [0.02], color=c_code[i]))
-    #redis_client = redis.Redis(host='172.16.0.3',port=6669, db=0)
-    robot_interface = XArm6Interface(robot_ip="192.168.55.1", cmd_port=5555, control_freq=args.frequency)
-    init_robot(robot_interface)
+    redis_client = redis.Redis(host='192.168.55.1',port=6669, db=0)
+    print("Redis client connected")
+    robot_interface = XArmInterface(robot_ip="192.168.55.1", cmd_port=5555, control_freq=args.frequency)
+    print("Xarm interface connected")
+    init_robot(redis_client, robot_interface)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
     #rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
     #quest = QuestRightArmLeapModule(VR_HOST, LOCAL_HOST, POSE_CMD_PORT, IK_RESULT_PORT, vis_sp=None)
