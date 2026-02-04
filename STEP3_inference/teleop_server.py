@@ -3,10 +3,10 @@ import time
 from argparse import ArgumentParser
 import numpy as np
 from scipy.spatial.transform import Rotation
-#import pybullet as pb
-#from rigidbodySento import create_primitive_shape
+import pybullet as pb
+from rigidbodySento import create_primitive_shape
 from ip_config import *
-#from rokoko_module import RokokoModule
+from rokoko_module import RokokoModule
 #from realsense_module import DepthCameraModule
 from quest_robot_module import QuestRightArmLeapModule
 
@@ -15,6 +15,10 @@ import redis
 import pickle
 from deoxys.xarm_interface import XArmInterface
 from deoxys.utils import YamlConfig
+from utils import check_connection, get_logger
+
+logger = get_logger("teleop_server")
+
 
 def convert_to_hardware(joint_angles):
     real_right_robot_hand_q = np.zeros(16)
@@ -49,7 +53,7 @@ def init_robot(redis_client, robot_interface):
         )
         time.sleep(0.5)
         redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
-    print("Initial position sent")
+    logger.info("Robot initial position sent")
     return
 
 
@@ -57,66 +61,66 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--frequency", type=int, default=30)
     args = parser.parse_args()
-    #c = pb.connect(pb.GUI)
-    #vis_sp = []
-    #c_code = c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
-    #for i in range(4):
-    #    vis_sp.append(create_primitive_shape(pb, 0.1, pb.GEOM_SPHERE, [0.02], color=c_code[i]))
-    redis_client = redis.Redis(host='192.168.55.1',port=6669, db=0)
-    print("Redis client connected")
-    robot_interface = XArmInterface(robot_ip="192.168.55.1", cmd_port=5555, control_freq=args.frequency)
-    print("Xarm interface connected")
+    c = pb.connect(pb.GUI)
+    vis_sp = []
+    c_code = c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
+    for i in range(4):
+        vis_sp.append(create_primitive_shape(pb, 0.1, pb.GEOM_SPHERE, [0.02], color=c_code[i]))
+
+    check_connection(CONTROL_HOST)
+    check_connection(VR_HOST)
+
+    redis_client = redis.Redis(host='CONTROL_HOST',port=HAND_PORT, db=0)
+    robot_interface = XArmInterface(robot_ip="CONTROL_HOST", cmd_port=ARM_PORT, control_freq=args.frequency)
     init_robot(redis_client, robot_interface)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
-    #rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
+    rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
     quest = QuestRightArmLeapModule(VR_HOST, LOCAL_HOST, POSE_CMD_PORT, IK_RESULT_PORT, vis_sp=None)
 
     start_time = time.time()
     fps_counter = 0
     packet_counter = 0
-    print("Initialization completed")
-#    current_ts = time.time()
-#    while True:
-#        now = time.time()
-#        # TODO: May cause communication issues, need to tune on AR side.
-#        if now - current_ts < 1 / args.frequency: 
-#            continue
-#        else:
-#            current_ts = now
-#        try:
-#            #point_cloud = camera.receive()
-#            left_positions, right_positions = rokoko.receive()
-#            rokoko.send_joint_data(np.vstack([left_positions, right_positions]))
-#            right_wrist, head_pose= quest.receive()
-#            if right_wrist is not None:
-#                right_wrist_orn = Rotation.from_quat(right_wrist[1])
-#                right_wrist_pos = right_wrist[0]
-#                head_pos = head_pose[0]
-#                head_orn = Rotation.from_quat(head_pose[1])
-#                hand_tip_pose = right_wrist_orn.apply(right_positions) + right_wrist_pos
-#                hand_tip_pose = hand_tip_pose[[1,2,3,0]]
-#                right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)
-#                quest.send_ik_result(right_arm_q, right_hand_q)
-#                if quest.data_dir is not None:
-#                    message = robot_interface.control(controller_type="JOINT_POSITION",
-#                                                    action=right_arm_q)
-#                    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
-#        except socket.error as e:
-#            print(e)
-#            pass
-#        except KeyboardInterrupt:
-#            #camera.close()
-#            rokoko.close()
-#            quest.close()
-#            break
-#        else:
-#            packet_time = time.time()
-#            fps_counter += 1
-#            packet_counter += 1
-#
-#            if (packet_time - start_time) > 1.0:
-#                print(f"received {fps_counter} packets in a second", end="\r")
-#                start_time += 1.0
-#                fps_counter = 0
-#        
-#
+    logger.info("Initialization completed... Start app in headset")
+    current_ts = time.time()
+    while True:
+        now = time.time()
+        # TODO: May cause communication issues, need to tune on AR side.
+        if now - current_ts < 1 / args.frequency:
+            continue
+        else:
+            current_ts = now
+        try:
+            #point_cloud = camera.receive()
+            left_positions, right_positions = rokoko.receive()
+            rokoko.send_joint_data(np.vstack([left_positions, right_positions]))
+            right_wrist, head_pose= quest.receive()
+            if right_wrist is not None:
+                right_wrist_orn = Rotation.from_quat(right_wrist[1])
+                right_wrist_pos = right_wrist[0]
+                head_pos = head_pose[0]
+                head_orn = Rotation.from_quat(head_pose[1])
+                hand_tip_pose = right_wrist_orn.apply(right_positions) + right_wrist_pos
+                hand_tip_pose = hand_tip_pose[[1,2,3,0]]
+                right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)
+                quest.send_ik_result(right_arm_q, right_hand_q)
+                if quest.data_dir is not None:
+                    message = robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
+                    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
+        except socket.error as e:
+            logger.error(e)
+            pass
+        except KeyboardInterrupt:
+            #camera.close()
+            rokoko.close()
+            quest.close()
+            break
+        else:
+            packet_time = time.time()
+            fps_counter += 1
+            packet_counter += 1
+
+            if (packet_time - start_time) > 1.0:
+                logger.info(f"received {fps_counter} packets in a second", end="\r")
+                start_time += 1.0
+                fps_counter = 0
+

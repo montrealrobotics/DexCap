@@ -6,6 +6,8 @@ from scipy.spatial.transform import Rotation
 import pybullet as pb
 import shutil
 
+END_EFFECTOR_INDEX = 6
+
 # For different robot, just write different QuestRightArmLeapModule classes
 class QuestRobotModule:
     def __init__(self,  vr_ip, local_ip, pose_cmd_port, ik_result_port=None):
@@ -70,12 +72,14 @@ class QuestRobotModule:
             self.ik_result_s.close()
 
 class QuestRightArmLeapModule(QuestRobotModule):
-    RIGHT_REST = [0.0,
-                -2.047,
-                -0.5173752903938293,
-                -0.0006711165769957006,
-                1.3967028856277466,
-                -0.0008034224156290293]
+    RIGHT_REST = [
+        0.0,
+        -2.047,
+        -0.5173752903938293,
+        -0.0006711165769957006,
+        1.3967028856277466,
+        -0.0008034224156290293,
+    ]
 
     RIGHT_HAND_Q = [np.pi / 6, -np.pi / 6, np.pi / 3, np.pi / 6,
               np.pi / 6, 0.0, np.pi / 3, np.pi / 6,
@@ -84,15 +88,15 @@ class QuestRightArmLeapModule(QuestRobotModule):
     fingertip_idx = [4, 9, 14, 19] # Use real fingertip indices
 
     right_hand_dest = np.array([[0.09, 0.02, -0.1], [0.09, -0.03, -0.1], [0.09, -0.08, -0.1], [0.01, 0.02, -0.14]])
-    
+
     right_hand_mount_offset = [0.05, -0.05, 0.1]
 
     right_hand_pos_offset = np.array([0.0, 0.0, -0.0])
-    
+
     right_hand_orn_offset = Rotation.from_euler("xyz", [-np.pi, 0., 0.])
 
     right_palm_orn_offset = np.array([-0.1, -0.05, 0.05, 0.0, 0.0, -np.pi/2])
-    
+
     def __init__(self, vr_ip, local_ip, pose_cmd_port, ik_result_port, vis_sp=None):
         super().__init__(vr_ip, local_ip, pose_cmd_port, ik_result_port)
         self.vis_sp = vis_sp
@@ -107,18 +111,26 @@ class QuestRightArmLeapModule(QuestRobotModule):
         self.prev_data_dir = self.data_dir
         self.last_arm_q = None
         self.last_hand_q = None
-    
+
     def solve_arm_ik(self, wrist_pos, wrist_orn, wrist_offset=None):
         # Solve IK for the wrist position
         if wrist_offset is not None:
             wrist_pos_ = wrist_orn.apply(wrist_offset[:3]) + wrist_pos # In world frame
             wrist_orn_ = wrist_orn * Rotation.from_euler("xyz", wrist_offset[3:])
-        target_q = pb.calculateInverseKinematics(self.right_arm, 9, wrist_pos_, wrist_orn_.as_quat(), 
-                                                 lowerLimits=self.right_lower_limits, upperLimits=self.right_upper_limits, 
-                                                 jointRanges=self.right_joint_ranges, restPoses=QuestRightArmLeapModule.RIGHT_REST, 
-                                                 maxNumIterations=40, residualThreshold=0.001)
+        target_q = pb.calculateInverseKinematics(
+            self.right_arm,
+            END_EFFECTOR_INDEX,
+            wrist_pos_,
+            wrist_orn_.as_quat(),
+            lowerLimits=self.right_lower_limits,
+            upperLimits=self.right_upper_limits,
+            jointRanges=self.right_joint_ranges,
+            restPoses=QuestRightArmLeapModule.RIGHT_REST,
+            maxNumIterations=40,
+            residualThreshold=0.001,
+        )
         return target_q
-    
+
     def solve_fingertip_ik(self, fingertip_pos):
         tip_poses = []
         for i,fid in enumerate(QuestRightArmLeapModule.fingertip_idx):
@@ -137,15 +149,15 @@ class QuestRightArmLeapModule(QuestRobotModule):
     def solve_system_world(self, wrist_pos, wrist_orn, tip_poses):
         arm_q = self.solve_arm_ik(wrist_pos+wrist_orn.apply(QuestRightArmLeapModule.right_hand_pos_offset), wrist_orn * QuestRightArmLeapModule.right_hand_orn_offset.inv(), QuestRightArmLeapModule.right_palm_orn_offset)
         self.set_joint_positions(self.right_arm, arm_q)
-        hand_xyz = np.asarray(pb.getLinkState(self.right_arm, 9)[0])
-        hand_orn = Rotation.from_quat(pb.getLinkState(self.right_arm, 9)[1])
+        hand_xyz = np.asarray(pb.getLinkState(self.right_arm, END_EFFECTOR_INDEX)[0])
+        hand_orn = Rotation.from_quat(pb.getLinkState(self.right_arm, END_EFFECTOR_INDEX)[1])
         pb.resetBasePositionAndOrientation(self.right_hand, hand_xyz + (hand_orn * QuestRightArmLeapModule.right_hand_orn_offset).apply(QuestRightArmLeapModule.right_hand_mount_offset), (hand_orn * QuestRightArmLeapModule.right_hand_orn_offset).as_quat())
         hand_q = self.solve_fingertip_ik(tip_poses)
         self.set_joint_positions(self.right_hand, hand_q)
         self.this_arm_q = arm_q
         self.this_hand_q = hand_q
         return arm_q, hand_q
-    
+
     def check_delta_joints(self, this_q, prev_q, threshold=0.1):
         if prev_q is None:
             return True
@@ -200,7 +212,6 @@ class QuestRightArmLeapModule(QuestRobotModule):
                 self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
                 os.mkdir(self.data_dir)
             return (rel_wrist_pos, rel_wrist_rot), (rel_head_pos, rel_head_rot)
-        
 
     def send_ik_result(self, right_arm_q, right_hand_q):
         delta_result = self.check_delta_joints(right_arm_q, self.last_arm_q) and self.check_delta_joints(right_hand_q, self.last_hand_q, 0.2)

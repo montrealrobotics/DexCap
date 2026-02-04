@@ -29,13 +29,30 @@ The installation is split in two parts, an installation on a Windows laptop and 
 
 ### On the NUC:
 
+#### Xarm
+If using an xarm also run the following:
+```
+mkdir -p ~/xarm_ws/src
+git clone https://github.com/montrealrobotics/LEAP_Hand_API.git
+git clone https://github.com/montrealrobotics/xarm_ros2.git -b humble_no_gazebo --recursive
+cd ~/xarm_ws/src/
+rosdep update
+rosdep install --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
+cd ~/xarm_ws/
+colcon build --symlink-install
+``
+
+Build the leap hand api ROS2 docker image following the installation instructions in the [leap api](https://github.com/montrealrobotics/LEAP_Hand_API) repo.
+
+#### Franka arm
+
 ```
 mkdir -p ~/dexcap_ws/src
 git clone git@github.com:montrealrobotics/deoxys_control.git
 git clone git@github.com:montrealrobotics/LEAP_Hand_API.git
 ```
 
-Build the controller code; Run this command in directory `deoxys_control/deoxys/` on the NUC.
+Build the controller code (if using Franka arm); Run this command in directory `deoxys_control/deoxys/` on the NUC.
 
 ``` shell
 cd ~/dexcap_ws/src/deoxys_control/deoxys
@@ -44,8 +61,13 @@ make -j build_franka=1
 
 Build the leap hand api ROS2 docker image following the installation instructions in the [leap api](https://github.com/montrealrobotics/LEAP_Hand_API) repo.
 
+#### Docker install
+Alternatively you can do a docker installation (recommended)
+
+...
+
 ### On the Windows laptop:
-Configure the ethernet interface connected to the NUC to have an IP in the same subnet, if the NUC is 172.16.0.3, set the ethernet interface IP to 172.16.0.2.
+Configure the ethernet interface connected to the NUC/Arm control computer to have an IP in the same subnet, if the NUC is 172.16.0.3, set the ethernet interface IP to 172.16.0.2.
 
 Clone this repo and deoxys control:
 
@@ -75,9 +97,28 @@ In a powershell window, set the DISPLAY variable to the IP of the ethernet inter
 set-variable -name DISPLAY -value 172.16.0.2:0.0
 ```
 
+Check that all of the ports you wish to use are included in docker_compose.yaml and that udp ports are specified as such.
+To stop windows from blocking these ports in the container, before starting the container, run
+
+```
+net stop winnat
+```
+
+Start the container and then...
+
+```
+net start winnat
+```
+
 Build the Docker image. (this should make the .Xauthority file available in the docker container at ~/root/)
+```
+docker compose build dexcap
+```
 
 When bringing up the docker container, the DISPLAY environment variable should be set to the same value as the host (172.16.0.2:0.0).
+```
+docker compose up dexcap
+```
 
 ## Teleop
 
@@ -91,6 +132,17 @@ Start the franka arm:
 
 Connect the power cable to the Leap hand.
 
+If using the xarm:
+
+1. Turn on the power
+2. Connect a ethernet cable to a switch that is also connected to the NUC and windows machine.
+
+Power on the Quest 3 headset
+
+Connect the rokoko gloves to their power banks, start up rokoko studio and start data streaming.
+
+The windows laptop, rokoko gloves and Quest3 headset should all be connected to the same wifi network.
+
 ### On the NUC
 
 Start a docker container for the leap hand following the readme in the leap repo. Use the ros2 version.
@@ -100,18 +152,33 @@ In the docker container launch the following to start listening to hand commands
 ros2 launch leap_hand launch_leap_redis.py
 ```
 
+For Franka:
 Under `deoxys_control/deoxys/`, run the following command to start the real-time control of the arm:
 
 ``` shell
 ./auto_scripts/auto_arm.sh config/charmander.yml
 ```
 
+For the Xarm:
+
+Launch the xarm with:
+```
+ros2 launch xarm_api xarm6_driver.launch.py robot_ip:=<ARM_IP> report_type:=normal
+```
+
+Launch node that converts messages to ros service calls for the Xarm:
+```
+ros2 launch xarm_api zmq_to_ros.launch.py
+```
+
 ### On the Laptop
 In the docker container, start the teleop server:
 ```
 cd ~/dexcap_ws/src/DexCap/STEP3_inference
-python teleop_server.py
+uv run teleop_server.py
 ```
+
+Start the ARCap app in the Quest 3 headset, enter the IP of the windows laptop (wifi interface)
 
 -------
 ## Data Collection
@@ -143,6 +210,16 @@ cd STEP3_inference
 python calibrate_camera.py
 ```
 Then, put on the headset and start ARCap application, select robot and align the virtual robot base with actual robot base; click `button A` after tuning robot base pose to enable deploy mode. Then put the headset to a support and tuning headset pose so that the manipulation scene is visible. Press `button A` and `button X` to confirm headset pose and finish hand eye calibration.
+
+## Troubleshooting
+
+The ARCap app in the Quest headset should be started after the teleop script has initialised and prompts you to launch the app.
+
+Once you start the app in the Quest headset, data should be streaming to the windows laptop, you can check this is the case by running, the following,
+the port is configured in ip_config.py:
+```
+ncat -u -l <POSE_CMD_PORT>
+```
 
 To test trained policy, first install...
 -------
