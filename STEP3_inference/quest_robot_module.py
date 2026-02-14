@@ -6,7 +6,6 @@ from scipy.spatial.transform import Rotation
 import pybullet as pb
 import shutil
 
-END_EFFECTOR_INDEX = 6
 
 # For different robot, just write different QuestRightArmLeapModule classes
 class QuestRobotModule:
@@ -19,6 +18,7 @@ class QuestRobotModule:
         self.wrist_listener_s.bind(("", pose_cmd_port))
         self.wrist_listener_s.setblocking(1)
         self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
+        self.world_frame = None
         # Initialize ik sender to Quest
         if ik_result_port is not None:
             self.ik_result_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -72,14 +72,6 @@ class QuestRobotModule:
             self.ik_result_s.close()
 
 class QuestRightArmLeapModule(QuestRobotModule):
-    RIGHT_REST = [
-        0.0,
-        -2.047,
-        -0.5173752903938293,
-        -0.0006711165769957006,
-        1.3967028856277466,
-        -0.0008034224156290293,
-    ]
 
     RIGHT_HAND_Q = [np.pi / 6, -np.pi / 6, np.pi / 3, np.pi / 6,
               np.pi / 6, 0.0, np.pi / 3, np.pi / 6,
@@ -97,13 +89,24 @@ class QuestRightArmLeapModule(QuestRobotModule):
 
     right_palm_orn_offset = np.array([-0.1, -0.05, 0.05, 0.0, 0.0, -np.pi/2])
 
-    def __init__(self, vr_ip, local_ip, pose_cmd_port, ik_result_port, vis_sp=None):
+    def __init__(self, vr_ip, local_ip, pose_cmd_port, ik_result_port, robot_config, vis_sp=None):
         super().__init__(vr_ip, local_ip, pose_cmd_port, ik_result_port)
         self.vis_sp = vis_sp
         # Initialize robots
-        self.right_arm = pb.loadURDF("assets/xarm_arm/xarm6_robot.urdf", basePosition=[0.0, 0.0, 0.0], baseOrientation=[0, 0, 0.7071068, 0.7071068], useFixedBase=True)
+        
+        urdf = robot_config['urdf'][0]
+
+        self.rest_position = robot_config['rest_position']
+
+        # Index for grasp target link
+        self.end_effector_index = robot_config['end_effector_index'][0]
+        if self.end_effector_index == 9:
+            self.arm_name = "franka"
+        else:
+            self.arm_name = "xarm"
+        self.right_arm = pb.loadURDF(urdf, basePosition=[0.0, 0.0, 0.0], baseOrientation=[0, 0, 0.7071068, 0.7071068], useFixedBase=True)
         self.right_hand = pb.loadURDF("assets/leap_hand/robot_pybullet.urdf")
-        self.set_joint_positions(self.right_arm, QuestRightArmLeapModule.RIGHT_REST)
+        self.set_joint_positions(self.right_arm, self.rest_position)
         self.set_joint_positions(self.right_hand, QuestRightArmLeapModule.RIGHT_HAND_Q)
         self.right_lower_limits, self.right_upper_limits, self.right_joint_ranges = self.get_joint_limits(self.right_arm)
         self.right_hand_lower_limits, self.right_hand_upper_limits, self.right_hand_joint_ranges = self.get_joint_limits(self.right_hand)
@@ -119,13 +122,13 @@ class QuestRightArmLeapModule(QuestRobotModule):
             wrist_orn_ = wrist_orn * Rotation.from_euler("xyz", wrist_offset[3:])
         target_q = pb.calculateInverseKinematics(
             self.right_arm,
-            END_EFFECTOR_INDEX,
+            self.end_effector_index,
             wrist_pos_,
             wrist_orn_.as_quat(),
             lowerLimits=self.right_lower_limits,
             upperLimits=self.right_upper_limits,
             jointRanges=self.right_joint_ranges,
-            restPoses=QuestRightArmLeapModule.RIGHT_REST,
+            restPoses=self.rest_position,
             maxNumIterations=40,
             residualThreshold=0.001,
         )
@@ -146,16 +149,19 @@ class QuestRightArmLeapModule(QuestRobotModule):
                                                                      maxNumIterations=40, residualThreshold=0.001))[4*i:4*(i+1)]
         return target_q
 
-    def solve_system_world(self, wrist_pos, wrist_orn, tip_poses):
+    def solve_system_world(self, wrist_pos, wrist_orn, tip_poses=None):
+        hand_q = QuestRightArmLeapModule.RIGHT_HAND_Q
         arm_q = self.solve_arm_ik(wrist_pos+wrist_orn.apply(QuestRightArmLeapModule.right_hand_pos_offset), wrist_orn * QuestRightArmLeapModule.right_hand_orn_offset.inv(), QuestRightArmLeapModule.right_palm_orn_offset)
         self.set_joint_positions(self.right_arm, arm_q)
-        hand_xyz = np.asarray(pb.getLinkState(self.right_arm, END_EFFECTOR_INDEX)[0])
-        hand_orn = Rotation.from_quat(pb.getLinkState(self.right_arm, END_EFFECTOR_INDEX)[1])
+        hand_xyz = np.asarray(pb.getLinkState(self.right_arm, self.end_effector_index)[0])
+        hand_orn = Rotation.from_quat(pb.getLinkState(self.right_arm, self.end_effector_index)[1])
         pb.resetBasePositionAndOrientation(self.right_hand, hand_xyz + (hand_orn * QuestRightArmLeapModule.right_hand_orn_offset).apply(QuestRightArmLeapModule.right_hand_mount_offset), (hand_orn * QuestRightArmLeapModule.right_hand_orn_offset).as_quat())
-        hand_q = self.solve_fingertip_ik(tip_poses)
+        if tip_poses is not None:
+            hand_q = self.solve_fingertip_ik(tip_poses)
+
         self.set_joint_positions(self.right_hand, hand_q)
-        self.this_arm_q = arm_q
         self.this_hand_q = hand_q
+        self.this_arm_q = arm_q
         return arm_q, hand_q
 
     def check_delta_joints(self, this_q, prev_q, threshold=0.1):
@@ -176,12 +182,12 @@ class QuestRightArmLeapModule(QuestRobotModule):
             world_frame = np.array(data_list)
             self.world_frame = world_frame
             self.wf_receive_ts = now.strftime("%Y-%m-%d-%H-%M-%S")
-            self.set_joint_positions(self.right_arm, QuestRightArmLeapModule.RIGHT_REST)
+            self.set_joint_positions(self.right_arm, self.rest_position)
             self.set_joint_positions(self.right_hand, QuestRightArmLeapModule.RIGHT_HAND_Q)
             os.mkdir(f"data/{self.wf_receive_ts}")
             np.save(f"data/{self.wf_receive_ts}/WorldFrame.npy", world_frame)
             return None, None
-        elif data_string.startswith("Start"):
+        elif data_string.startswith("Start") and self.wf_receive_ts is not None:
             formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
             self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
             os.mkdir(self.data_dir)
@@ -200,7 +206,7 @@ class QuestRightArmLeapModule(QuestRobotModule):
             self.data_dir = None
             self.prev_data_dir = None
             return None, None
-        elif data_string.find("RHand") != -1:
+        elif data_string.find("RHand") != -1 and self.world_frame is not None:
             data_string_ = data_string[7:].split(",")
             data_list = [float(data) for data in data_string_]
             wrist_tf = np.array(data_list[:7])
@@ -212,8 +218,10 @@ class QuestRightArmLeapModule(QuestRobotModule):
                 self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
                 os.mkdir(self.data_dir)
             return (rel_wrist_pos, rel_wrist_rot), (rel_head_pos, rel_head_rot)
+        else:
+            return 1, 1
 
-    def send_ik_result(self, right_arm_q, right_hand_q):
+    def send_ik_result(self, right_arm_q, right_hand_q=None):
         delta_result = self.check_delta_joints(right_arm_q, self.last_arm_q) and self.check_delta_joints(right_hand_q, self.last_hand_q, 0.2)
         if self.data_dir is None:
             delta_result = "G"
@@ -221,8 +229,12 @@ class QuestRightArmLeapModule(QuestRobotModule):
             delta_result = "Y"
         else:
             delta_result = "N"
-        msg = f"{delta_result},{right_arm_q[0]:.3f},{right_arm_q[1]:.3f},{right_arm_q[2]:.3f},{right_arm_q[3]:.3f},{right_arm_q[4]:.3f},{right_arm_q[5]:.3f},{right_arm_q[6]:.3f}"
-        msg += f",{right_hand_q[0]:.3f},{right_hand_q[1]:.3f},{right_hand_q[2]:.3f},{right_hand_q[3]:.3f},{right_hand_q[4]:.3f},{right_hand_q[5]:.3f},{right_hand_q[6]:.3f},{right_hand_q[7]:.3f},{right_hand_q[8]:.3f},{right_hand_q[9]:.3f},{right_hand_q[10]:.3f},{right_hand_q[11]:.3f},{right_hand_q[12]:.3f},{right_hand_q[13]:.3f},{right_hand_q[14]:.3f},{right_hand_q[15]:.3f}"
+        if self.arm_name == "franka":
+            msg = f"{delta_result},{right_arm_q[0]:.3f},{right_arm_q[1]:.3f},{right_arm_q[2]:.3f},{right_arm_q[3]:.3f},{right_arm_q[4]:.3f},{right_arm_q[5]:.3f},{right_arm_q[6]:.3f}"
+        else:
+            msg = f"{delta_result},{right_arm_q[0]:.3f},{right_arm_q[1]:.3f},{right_arm_q[2]:.3f},{right_arm_q[3]:.3f},{right_arm_q[4]:.3f},{right_arm_q[5]:.3f}"
+        if right_hand_q is not None:
+            msg += f",{right_hand_q[0]:.3f},{right_hand_q[1]:.3f},{right_hand_q[2]:.3f},{right_hand_q[3]:.3f},{right_hand_q[4]:.3f},{right_hand_q[5]:.3f},{right_hand_q[6]:.3f},{right_hand_q[7]:.3f},{right_hand_q[8]:.3f},{right_hand_q[9]:.3f},{right_hand_q[10]:.3f},{right_hand_q[11]:.3f},{right_hand_q[12]:.3f},{right_hand_q[13]:.3f},{right_hand_q[14]:.3f},{right_hand_q[15]:.3f}"
         self.ik_result_s.sendto(msg.encode(), self.ik_result_dest)
         self.last_arm_q = right_arm_q
         self.last_hand_q = right_hand_q

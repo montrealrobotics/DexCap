@@ -42,7 +42,7 @@ def check_connection(host_name, ip_address, logger=None):
 
     while True:
         result = subprocess.run(
-            ["ping", param, "1", "-W", "1000", ip_address],
+            ["ping", param, "1", "-W", "5", ip_address],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
@@ -51,5 +51,5 @@ def check_connection(host_name, ip_address, logger=None):
             logger.info(f"{host_name} ip is REACHABLE.")
             break
 
-        logger.warning(f"{host_name} ({ip_address}) not found. Retrying in 2s...")
+        logger.warning(f"{host_name} ({ip_address}) not found. Retrying in 5s...")
         time.sleep(2)

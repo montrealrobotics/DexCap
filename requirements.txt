@@ -1,0 +1,38 @@
+# Python dependencies converted from environment.yml
+# Python version: 3.10
+# 
+# Note: This file is for Linux/Docker environments
+# PyTorch with CUDA is installed separately in the Dockerfile
+
+pyzmq
+PyYAML
+easydict
+google-api-python-client
+pybullet==3.2.7
+numpy>=2.2.6
+hidapi
+glfw
+numba
+termcolor
+simplejson
+mujoco==3.1.0
+h5py
+psutil
+tqdm
+tensorboard
+tensorboardX
+imageio
+imageio-ffmpeg
+matplotlib
+egl_probe>=1.0.1
+# torch and torchvision installed separately with CUDA support
+diffusers==0.11.1
+einops
+scipy
+open3d
+transforms3d
+yourdfpy
+wandb
+redis
+robomimic
+
