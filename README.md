@@ -40,7 +40,7 @@ rosdep update
 rosdep install --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
 cd ~/xarm_ws/
 colcon build --symlink-install
-``
+```
 
 Build the leap hand api ROS2 docker image following the installation instructions in the [leap api](https://github.com/montrealrobotics/LEAP_Hand_API) repo.
 
