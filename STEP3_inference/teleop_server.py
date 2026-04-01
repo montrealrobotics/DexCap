@@ -31,23 +31,25 @@ def convert_to_hardware(joint_angles):
     return real_right_robot_hand_q.tolist()
 
 
-def init_robot(redis_client, robot_interface, arm_start_joints):
-    hand_target = [0.0 for _ in range(16)]
-    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
+def init_robot(robot_interface, arm_start_joints):
 
     robot_interface._state_buffer = []
 
-    paper_q = [0.0 for _ in range(16)]
     for _ in range(10):
         robot_interface.control(
             controller_type="JOINT_POSITION",
             action=arm_start_joints
         )
         time.sleep(0.5)
-        redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
     logger.info("Robot initial position sent")
     state = robot_interface.get_state()
     return
+
+def init_leaphand(redis_client):
+    hand_target = [0.0 for _ in range(16)]
+    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
+    paper_q = [0.0 for _ in range(16)]
+    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
 
 
 if __name__ == "__main__":
@@ -56,12 +58,14 @@ if __name__ == "__main__":
     parser.add_argument("--real_robot", type=bool, default=False)
     parser.add_argument("--use_gloves", type=bool, default=False)
     parser.add_argument("--robot_arm", type=str, default="franka")
+    parser.add_argument("--gripper", type=str, default="leap")
     args = parser.parse_args()
     c = pb.connect(pb.GUI)
     vis_sp = []
     hand_ctrl = args.use_gloves
     real_robot = args.real_robot
     robot_arm = args.robot_arm
+    gripper = args.gripper
     arm_config = YamlConfig("configs/" + robot_arm + '_arm.yaml').as_easydict()
     arm_start_joints = arm_config['fixed_joints']
 
@@ -72,12 +76,15 @@ if __name__ == "__main__":
     check_connection("VR_headset", VR_HOST)
     if real_robot:
         check_connection("Arm_control", CONTROL_HOST)
-        redis_client = redis.Redis(host=CONTROL_HOST,port=HAND_PORT, db=0)
         if robot_arm == "xarm":
             robot_interface = XArmInterface(robot_ctrl_ip=CONTROL_HOST, cmd_port=ARM_PORT, control_freq=args.frequency)
         else:
             robot_interface = FrankaInterface(robot_ctrl_ip=CONTROL_HOST, cmd_port=ARM_PORT, control_freq=args.frequency)
-        init_robot(redis_client, robot_interface, arm_start_joints)
+
+        init_robot(robot_interface, arm_start_joints)
+        if gripper == "leap":
+            redis_client = redis.Redis(host=CONTROL_HOST,port=HAND_PORT, db=0)
+            init_leaphand(redis_client)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
 
     if hand_ctrl:
@@ -125,8 +132,8 @@ if __name__ == "__main__":
                 if quest.data_dir is not None:
                     if real_robot:
                         robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
-                        # state = robot_interface.get_state()
-                        redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
+                        if gripper == "leap":
+                            redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
         except socket.error as e:
             logger.error(e)
             pass
