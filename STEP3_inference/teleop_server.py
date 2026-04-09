@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("--frequency", type=int, default=30)
     parser.add_argument("--real_robot", type=bool, default=False)
     parser.add_argument("--use_gloves", type=bool, default=False)
-    parser.add_argument("--robot_arm", type=str, default="franka")
+    parser.add_argument("--robot_arm", type=str, default="xarm")
     parser.add_argument("--gripper", type=str, default="leap")
     args = parser.parse_args()
     c = pb.connect(pb.GUI)

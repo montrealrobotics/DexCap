@@ -1,11 +1,11 @@
 
 services:
-  dexcap_new:
+  dexcap:
     build:
       context: ..
       dockerfile: DexCap/Dockerfile
     image: dexcap:install
-    container_name: dexcap_new
+    container_name: dexcap
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all

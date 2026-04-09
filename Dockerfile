@@ -52,23 +52,23 @@ RUN wget https://github.com/Kitware/CMake/releases/download/v3.24.3/cmake-3.24.3
 #    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
-WORKDIR /workspace
+WORKDIR /home
 
 # Copy requirements first for better caching
-COPY DexCap/requirements.txt /workspace/
-COPY DexCap/pyproject.toml /workspace/
-COPY DexCap/.python-version /workspace/
-COPY deoxys_control/deoxys/requirements.txt /workspace/requirements_deoxys.txt 
+COPY DexCap/requirements.txt /home/
+#COPY DexCap/pyproject.toml /workspace/
+COPY DexCap/.python-version /home/
+COPY deoxys_control/deoxys/requirements.txt /home/requirements_deoxys.txt 
 
-WORKDIR /workspace/DexCap
+WORKDIR /home/
 # Create virtual environment using Python 3.10
 RUN uv init && uv venv
 
 # Add venv to PATH so it's automatically used
-ENV PATH="/workspace/DexCap/.venv/bin:${PATH}"
+ENV PATH="/home/.venv/bin:${PATH}"
 #ENV VIRTUAL_ENV="/workspace/DexCap/.venv"
 
-WORKDIR /workspace/
+WORKDIR /home/
 # Install Python dependencies using uv (will use venv automatically)
 RUN uv pip install -r requirements.txt
 RUN uv pip install -r requirements_deoxys.txt
@@ -81,7 +81,7 @@ RUN uv pip install "protobuf==3.13.0"
 # Users will need to clone deoxys_control to the appropriate location
 
 # Set up environment for deoxys_controller
-ENV PYTHONPATH=/workspace:${PYTHONPATH}
+ENV PYTHONPATH=/workspace:/workspace/deoxys_control/deoxys:${PYTHONPATH}
 
 # COPY deoxys_control/deoxys/InstallPackage /workspace/
 # RUN echo "0.15.0" | sh /workspace/InstallPackage
