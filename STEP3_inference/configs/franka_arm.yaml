@@ -18,3 +18,6 @@ rest_position:
   - 1.1980939705504309
 urdf:
   - "assets/franka_arm/panda_leap.urdf"
+
+impedance_controller_cfg: "robot_config/joint-impedance-controller.yml"
+position_controller_cfg: "robot_config/joint-position-controller.yml"

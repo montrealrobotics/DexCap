@@ -30,14 +30,15 @@ def convert_to_hardware(joint_angles):
     return real_right_robot_hand_q.tolist()
 
 
-def init_robot(robot_interface, arm_start_joints):
+def init_robot(robot_interface, arm_start_joints, position_controller_cfg):
 
     robot_interface._state_buffer = []
 
     for _ in range(10):
         robot_interface.control(
             controller_type="JOINT_POSITION",
-            action=arm_start_joints
+            action=arm_start_joints,
+            controller_cfg=position_controller_cfg,
         )
         time.sleep(0.5)
     logger.info("Robot initial position sent")
@@ -65,6 +66,8 @@ if __name__ == "__main__":
     arm_config = YamlConfig("configs/" + robot_arm + '_arm.yaml').as_easydict()
     ip_config = YamlConfig("robot_config/" + robot_arm + '.yaml').as_easydict()
     arm_start_joints = arm_config['fixed_joints']
+    impedance_controller_cfg = YamlConfig(arm_config['impedance_controller_cfg']).as_easydict()
+    position_controller_cfg = YamlConfig(arm_config['position_controller_cfg']).as_easydict()
 
     c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
     for i in range(4):
@@ -78,7 +81,7 @@ if __name__ == "__main__":
         else:
             robot_interface = FrankaInterface(general_cfg=ip_config, use_visualizer=False, has_gripper=False, control_freq=args.frequency)
 
-        init_robot(robot_interface, arm_start_joints)
+        init_robot(robot_interface, arm_start_joints, position_controller_cfg)
         if gripper == "leap":
             redis_client = redis.Redis(ip_config.CTRL_HOST.IP_ETH, port=ip_config.CTRL_HOST.HAND_PORT, db=0)
             init_leaphand(redis_client)
@@ -128,7 +131,7 @@ if __name__ == "__main__":
                 quest.send_ik_result(right_arm_q, right_hand_q)
                 if quest.data_dir is not None:
                     if real_robot:
-                        robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
+                        robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q, controller_cfg=impedance_controller_cfg)
                         if gripper == "leap":
                             redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
         except socket.error as e:
