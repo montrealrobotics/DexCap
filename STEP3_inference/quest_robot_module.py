@@ -9,20 +9,21 @@ import shutil
 
 # For different robot, just write different QuestRightArmLeapModule classes
 class QuestRobotModule:
-    def __init__(self,  vr_ip, local_ip, pose_cmd_port, ik_result_port=None):
-        self.vr_ip = vr_ip
-        self.local_ip = local_ip
-        self.pose_cmd_port = pose_cmd_port
+    def __init__(self, config):
+        self.vr_ip = config.TELEOP.VR_HOST
+        self.local_ip = config.LOCAL_HOST.IP_WIFI
+        self.pose_cmd_port = config.TELEOP.POSE_CMD_PORT
+        self.ik_result_port = config.TELEOP.IK_RESULT_PORT
         # Quest should send WorldFrame as well as wrist pose via UDP
         self.wrist_listener_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.wrist_listener_s.bind(("", pose_cmd_port))
+        self.wrist_listener_s.bind(("", self.pose_cmd_port))
         self.wrist_listener_s.setblocking(1)
         self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
         self.world_frame = None
         # Initialize ik sender to Quest
-        if ik_result_port is not None:
+        if self.ik_result_port is not None:
             self.ik_result_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.ik_result_dest = (vr_ip, ik_result_port)
+            self.ik_result_dest = (self.vr_ip, self.ik_result_port)
         else:
             self.ik_result_s = None
 
@@ -89,8 +90,8 @@ class QuestRightArmLeapModule(QuestRobotModule):
 
     right_palm_orn_offset = np.array([-0.1, -0.05, 0.05, 0.0, 0.0, -np.pi/2])
 
-    def __init__(self, vr_ip, local_ip, pose_cmd_port, ik_result_port, robot_config, vis_sp=None):
-        super().__init__(vr_ip, local_ip, pose_cmd_port, ik_result_port)
+    def __init__(self, ip_config, robot_config, vis_sp=None):
+        super().__init__(ip_config)
         self.vis_sp = vis_sp
         # Initialize robots
         

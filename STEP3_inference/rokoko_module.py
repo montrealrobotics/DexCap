@@ -19,13 +19,13 @@ class RokokoModule:
 
     tip_id = [[4, 8, 12, 16, 20],[3,7,11,15,19],[2,6,10,14,18],[1,5,9,13,17],[0,0,0,0,0]]
     #tip_id = list(range(21))
-    def __init__(self,vr_ip, hand_info_port ,listener_port, visualization=False):
+    def __init__(self, config, visualization=False):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
-        self.sock.bind(("", listener_port))
+        self.sock.bind(("", config.TELEOP.ROKOKO_PORT))
         self.sock.setblocking(1)
         self.tip_vis_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.tip_vis_dest = (vr_ip, hand_info_port)
+        self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.VR_HOST.HAND_INFO_PORT)
         self.visualization = visualization
         self.cnt = 0
         if self.visualization:

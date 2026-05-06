@@ -6,7 +6,6 @@ from scipy.spatial.transform import Rotation
 import pybullet as pb
 import yaml
 from rigidbodySento import create_primitive_shape
-from ip_config import *
 from rokoko_module import RokokoModule
 #from realsense_module import DepthCameraModule
 from quest_robot_module import QuestRightArmLeapModule
@@ -42,14 +41,11 @@ def init_robot(robot_interface, arm_start_joints):
         )
         time.sleep(0.5)
     logger.info("Robot initial position sent")
-    state = robot_interface.get_state()
     return
 
 def init_leaphand(redis_client):
     hand_target = [0.0 for _ in range(16)]
     redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(hand_target)))
-    paper_q = [0.0 for _ in range(16)]
-    redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(paper_q)))
 
 
 if __name__ == "__main__":
@@ -67,29 +63,30 @@ if __name__ == "__main__":
     robot_arm = args.robot_arm
     gripper = args.gripper
     arm_config = YamlConfig("configs/" + robot_arm + '_arm.yaml').as_easydict()
+    ip_config = YamlConfig("robot_config/" + robot_arm + '.yaml').as_easydict()
     arm_start_joints = arm_config['fixed_joints']
 
-    c_code = c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
+    c_code = [[1,0,0,1], [0,1,0,1], [0,0,1,1], [1,1,0,1]]
     for i in range(4):
         vis_sp.append(create_primitive_shape(pb, 0.1, pb.GEOM_SPHERE, [0.02], color=c_code[i]))
 
-    check_connection("VR_headset", VR_HOST)
+    check_connection("VR_headset", ip_config.TELEOP.VR_HOST)
     if real_robot:
-        check_connection("Arm_control", CONTROL_HOST)
+        check_connection("Arm_control", ip_config.CTRL_HOST.IP_ETH)
         if robot_arm == "xarm":
-            robot_interface = XArmInterface(robot_ctrl_ip=CONTROL_HOST, cmd_port=ARM_PORT, control_freq=args.frequency)
+            robot_interface = XArmInterface(general_cfg=ip_config, has_gripper=False, control_freq=args.frequency)
         else:
-            robot_interface = FrankaInterface(robot_ctrl_ip=CONTROL_HOST, cmd_port=ARM_PORT, control_freq=args.frequency)
+            robot_interface = FrankaInterface(general_cfg=ip_config, use_visualizer=False, has_gripper=False, control_freq=args.frequency)
 
         init_robot(robot_interface, arm_start_joints)
         if gripper == "leap":
-            redis_client = redis.Redis(host=CONTROL_HOST,port=HAND_PORT, db=0)
+            redis_client = redis.Redis(ip_config.CTRL_HOST.IP_ETH, port=ip_config.CTRL_HOST.HAND_PORT, db=0)
             init_leaphand(redis_client)
     #camera = DepthCameraModule(is_decimate=False, visualize=False)
 
     if hand_ctrl:
-        rokoko = RokokoModule(VR_HOST, HAND_INFO_PORT, ROKOKO_PORT)
-    quest = QuestRightArmLeapModule(VR_HOST, LOCAL_HOST, POSE_CMD_PORT, IK_RESULT_PORT, arm_config, vis_sp=None)
+        rokoko = RokokoModule(ip_config)
+    quest = QuestRightArmLeapModule(ip_config, arm_config, vis_sp=None)
 
     start_time = time.time()
     fps_counter = 0
@@ -139,7 +136,8 @@ if __name__ == "__main__":
             pass
         except KeyboardInterrupt:
             #camera.close()
-            rokoko.close()
+            if hand_ctrl:
+                rokoko.close()
             quest.close()
             break
         else:
