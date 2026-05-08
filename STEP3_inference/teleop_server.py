@@ -13,7 +13,7 @@ from quest_robot_module import QuestRightArmLeapModule
 # Robot deployment imports
 import redis
 import pickle
-from deoxys.xarm_interface import XArmInterface
+# from deoxys.xarm_interface import XArmInterface
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils import YamlConfig
 from utils import check_connection, get_logger
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     parser.add_argument("--frequency", type=int, default=30)
     parser.add_argument("--real_robot", type=bool, default=False)
     parser.add_argument("--use_gloves", type=bool, default=False)
-    parser.add_argument("--robot_arm", type=str, default="xarm")
+    parser.add_argument("--robot_arm", type=str, default="franka")
     parser.add_argument("--gripper", type=str, default="leap")
     args = parser.parse_args()
     c = pb.connect(pb.GUI)
@@ -131,9 +131,14 @@ if __name__ == "__main__":
                 quest.send_ik_result(right_arm_q, right_hand_q)
                 if quest.data_dir is not None:
                     if real_robot:
-                        robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q, controller_cfg=impedance_controller_cfg)
-                        if gripper == "leap":
-                            redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
+                        if robot_arm == "xarm":
+                            robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
+
+                        else:
+                            robot_interface.control(controller_type="JOINT_IMPEDANCE", action=right_arm_q, controller_cfg=impedance_controller_cfg)
+
+                        # if gripper == "leap":
+                            # redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
         except socket.error as e:
             logger.error(e)
             pass
@@ -142,6 +147,7 @@ if __name__ == "__main__":
             if hand_ctrl:
                 rokoko.close()
             quest.close()
+            robot_interface.close()
             break
         else:
             packet_time = time.time()

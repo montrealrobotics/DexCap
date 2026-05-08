@@ -25,7 +25,7 @@ class RokokoModule:
         self.sock.bind(("", config.TELEOP.ROKOKO_PORT))
         self.sock.setblocking(1)
         self.tip_vis_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.VR_HOST.HAND_INFO_PORT)
+        self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.HAND_INFO_PORT)
         self.visualization = visualization
         self.cnt = 0
         if self.visualization:
