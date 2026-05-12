@@ -5,6 +5,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import pybullet as pb
 import shutil
+from utils import StatusCode
 
 
 # For different robot, just write different QuestRightArmLeapModule classes
@@ -17,12 +18,15 @@ class QuestRobotModule:
         # Quest should send WorldFrame as well as wrist pose via UDP
         self.wrist_listener_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.wrist_listener_s.bind(("", self.pose_cmd_port))
-        self.wrist_listener_s.setblocking(1)
+        self.wrist_listener_s.settimeout(5)
+        # self.wrist_listener_s.setblocking(1)
         self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
+        self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.world_frame = None
         # Initialize ik sender to Quest
         if self.ik_result_port is not None:
             self.ik_result_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.ik_result_s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.ik_result_dest = (self.vr_ip, self.ik_result_port)
         else:
             self.ik_result_s = None
@@ -173,7 +177,10 @@ class QuestRightArmLeapModule(QuestRobotModule):
 
     # World frame marks beginning of a program.
     def receive(self):
-        data, _ = self.wrist_listener_s.recvfrom(1024)
+        try:
+            data, _ = self.wrist_listener_s.recvfrom(1024)
+        except socket.timeout:
+            return StatusCode.SOCKET_TIMEOUT, None, None
         data_string = data.decode()
         now = datetime.datetime.now()
         if data_string.startswith("WorldFrame"):
@@ -187,18 +194,18 @@ class QuestRightArmLeapModule(QuestRobotModule):
             self.set_joint_positions(self.right_hand, QuestRightArmLeapModule.RIGHT_HAND_Q)
             os.mkdir(f"data/{self.wf_receive_ts}")
             np.save(f"data/{self.wf_receive_ts}/WorldFrame.npy", world_frame)
-            return None, None
+            return StatusCode.SUCCESS, None, None
         elif data_string.startswith("Start") and self.wf_receive_ts is not None:
             formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
             self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
             os.mkdir(self.data_dir)
-            return None, None
+            return StatusCode.SUCCESS, None, None
         elif data_string.startswith("Stop"):
             formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
             if self.data_dir is not None:
                 self.prev_data_dir = self.data_dir
             self.data_dir = None
-            return None, None
+            return StatusCode.SUCCESS, None, None
         elif data_string.startswith("Remove"):
             if self.data_dir is not None and os.path.exists(self.data_dir):
                 shutil.rmtree(self.data_dir)
@@ -206,7 +213,7 @@ class QuestRightArmLeapModule(QuestRobotModule):
                 shutil.rmtree(self.prev_data_dir)
             self.data_dir = None
             self.prev_data_dir = None
-            return None, None
+            return StatusCode.SUCCESS, None, None
         elif data_string.find("RHand") != -1 and self.world_frame is not None:
             data_string_ = data_string[7:].split(",")
             data_list = [float(data) for data in data_string_]
@@ -218,9 +225,9 @@ class QuestRightArmLeapModule(QuestRobotModule):
                 formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
                 self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
                 os.mkdir(self.data_dir)
-            return (rel_wrist_pos, rel_wrist_rot), (rel_head_pos, rel_head_rot)
+            return StatusCode.SUCCESS, (rel_wrist_pos, rel_wrist_rot), (rel_head_pos, rel_head_rot)
         else:
-            return 1, 1
+            return StatusCode.APP_RESTART, None, None
 
     def send_ik_result(self, right_arm_q, right_hand_q=None):
         delta_result = self.check_delta_joints(right_arm_q, self.last_arm_q) and self.check_delta_joints(right_hand_q, self.last_hand_q, 0.2)
