@@ -6,6 +6,8 @@ fixed_joints:
   - -0.01307073642274261
   - 2.00396583422025
   - 0.8480939705504309
+gripper_init:
+  - 0.0
 end_effector_index:
   - 9
 rest_position:

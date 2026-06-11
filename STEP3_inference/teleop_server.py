@@ -8,12 +8,12 @@ import yaml
 from rigidbodySento import create_primitive_shape
 from rokoko_module import RokokoModule
 #from realsense_module import DepthCameraModule
-from quest_robot_module import QuestRightArmLeapModule
+from quest_robot_module import QuestRightArmLeapModule, QuestRightArmXArmGripperModule
 
 # Robot deployment imports
 import redis
 import pickle
-# from deoxys.xarm_interface import XArmInterface
+from deoxys.robot_interfaces.xarm_interface import XArmInterface
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils import YamlConfig
 from utils import check_connection, get_logger, StatusCode
@@ -33,7 +33,6 @@ def convert_to_hardware(joint_angles):
 def init_robot(robot_interface, arm_start_joints, position_controller_cfg):
 
     robot_interface._state_buffer = []
-
     for _ in range(10):
         robot_interface.control(
             controller_type="JOINT_POSITION",
@@ -77,7 +76,11 @@ if __name__ == "__main__":
     if real_robot:
         check_connection("Arm_control", ip_config.CTRL_HOST.IP_ETH)
         if robot_arm == "xarm":
-            robot_interface = XArmInterface(general_cfg=ip_config, has_gripper=False, control_freq=args.frequency)
+            if gripper == "xarm_g":
+                robot_interface = XArmInterface(general_cfg=ip_config, has_gripper=True, control_freq=args.frequency)
+                arm_start_joints.append(arm_config['gripper_init'][0])
+            else:
+                robot_interface = XArmInterface(general_cfg=ip_config, has_gripper=False, control_freq=args.frequency)
         else:
             robot_interface = FrankaInterface(general_cfg=ip_config, use_visualizer=False, has_gripper=False, control_freq=args.frequency)
 
@@ -89,7 +92,7 @@ if __name__ == "__main__":
 
     if hand_ctrl:
         rokoko = RokokoModule(ip_config)
-    quest = QuestRightArmLeapModule(ip_config, arm_config, vis_sp=None)
+    quest = QuestRightArmXArmGripperModule(ip_config, arm_config, vis_sp=None)
 
     start_time = time.time()
     fps_counter = 0
@@ -129,11 +132,12 @@ if __name__ == "__main__":
 
                     else:
                         right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn)
-
                     quest.send_ik_result(right_arm_q, right_hand_q)
                     if quest.data_dir is not None:
                         if real_robot:
                             if robot_arm == "xarm":
+                                if gripper == 'xarm_g':
+                                    right_arm_q = right_arm_q + (right_hand_q[0],)
                                 robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
 
                             else:
@@ -148,7 +152,7 @@ if __name__ == "__main__":
             #camera.close()
             if hand_ctrl:
                 rokoko.close()
-            quest.close()
+            # quest.close()
             robot_interface.close()
             break
         else:
