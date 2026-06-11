@@ -6,6 +6,8 @@ fixed_joints:
   - -0.01307073642274261
   - 2.00396583422025
   - 0.8480939705504309
+gripper_init:
+  - 0.0
 end_effector_index:
   - 9
 rest_position:
@@ -18,3 +20,6 @@ rest_position:
   - 1.1980939705504309
 urdf:
   - "assets/franka_arm/panda_leap.urdf"
+
+impedance_controller_cfg: "robot_config/joint-impedance-controller.yml"
+position_controller_cfg: "robot_config/joint-position-controller.yml"

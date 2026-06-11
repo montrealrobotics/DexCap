@@ -2,6 +2,7 @@ import logging
 import time
 import subprocess
 import platform
+from enum import IntEnum
 
 class CustomFormatter(logging.Formatter):
     yellow = "\x1b[33;21m"
@@ -21,10 +22,16 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt, datefmt="%H:%M:%S")
         return formatter.format(record)
 
+class StatusCode(IntEnum):
+    SUCCESS = 0
+    APP_RESTART = 1
+    SOCKET_TIMEOUT = 2
+
 def get_logger(name="dexcap"):
     logger = logging.getLogger(name)
+    logger.propagate = False
     if not logger.handlers:
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logging.INFO)
         ch = logging.StreamHandler()
         ch.setFormatter(CustomFormatter())
         logger.addHandler(ch)
