@@ -7,3 +7,6 @@
 **/ckpt
 data/
 **/external_models
+build/
+dist/
+logs/
