@@ -8,7 +8,8 @@ import socket
 import sys
 import time
 import json
-from ip_config import ROKOKO_PORT, VR_HOST, HAND_INFO_PORT
+from deoxys.utils import YamlConfig
+from pathlib import Path
 
 def get_local_ip():
     """Get the local IP address"""
@@ -24,12 +25,17 @@ def get_local_ip():
 
 def test_rokoko_listener():
     """Test if we can receive UDP packets on the Rokoko port"""
+    current_dir = str(Path(__file__).resolve().parent)
+    ip_config = YamlConfig(current_dir + "/robot_config/teleop_cfg.yaml").as_easydict()
+    rokoko_port = ip_config.TELEOP.ROKOKO_PORT
+    vr_host = ip_config.TELEOP.VR_HOST
+    hand_info_port = ip_config.TELEOP.HAND_INFO_PORT
     print("=" * 60)
     print("Rokoko UDP Connection Test")
     print("=" * 60)
-    print(f"Target port: {ROKOKO_PORT}")
-    print(f"VR Host: {VR_HOST}")
-    print(f"Hand Info Port: {HAND_INFO_PORT}")
+    print(f"Target port: {rokoko_port}")
+    print(f"VR Host: {vr_host}")
+    print(f"Hand Info Port: {hand_info_port}")
     print(f"Local IP: {get_local_ip()}")
     print("=" * 60)
     
@@ -44,8 +50,8 @@ def test_rokoko_listener():
     
     try:
         # Bind to the port (listening on all interfaces)
-        sock.bind(("", ROKOKO_PORT))
-        print(f"✓ Successfully bound to 0.0.0.0:{ROKOKO_PORT}")
+        sock.bind(("", rokoko_port))
+        print(f"✓ Successfully bound to 0.0.0.0:{rokoko_port}")
         
         # Get socket info
         try:
@@ -101,9 +107,9 @@ def test_rokoko_listener():
                     print("1. Check if Rokoko Studio is running and streaming")
                     print("2. Verify Rokoko Studio is configured to send to:")
                     print(f"   - IP: {get_local_ip()} (or your Docker host IP)")
-                    print(f"   - Port: {ROKOKO_PORT}")
+                    print(f"   - Port: {rokoko_port}")
                     print("3. If running in Docker:")
-                    print(f"   - Port {ROKOKO_PORT} should be exposed (check docker-compose.yml)")
+                    print(f"   - Port {rokoko_port} should be exposed (check docker-compose.yml)")
                     print(f"   - Rokoko Studio should send to Docker HOST IP: {get_local_ip()}")
                     print("   - NOT the container's internal IP")
                     print("   - Try 'host' network mode: network_mode: host")
@@ -114,12 +120,12 @@ def test_rokoko_listener():
                 break
                 
     except OSError as e:
-        print(f"\n✗ ERROR: Could not bind to port {ROKOKO_PORT}")
+        print(f"\n✗ ERROR: Could not bind to port {rokoko_port}")
         print(f"  Error: {e}")
         print("\nTroubleshooting:")
         print("  - Port might already be in use by another process")
-        print("  - Try: netstat -an | findstr {ROKOKO_PORT} (Windows)")
-        print("  - Or: netstat -an | grep {ROKOKO_PORT} (Linux)")
+        print("  - Try: netstat -an | findstr {rokoko_port} (Windows)")
+        print("  - Or: netstat -an | grep {rokoko_port} (Linux)")
         print("  - If in Docker, ensure port mapping is correct")
         
     except KeyboardInterrupt:
