@@ -1,6 +1,6 @@
 # ffmpeg -framerate 10 -i saved_current_frames/%d.jpg -c:v mpeg4 -pix_fmt yuv420p saved_run_video.mp4
 
-import argparse
+from argparse import ArgumentParser
 import h5py
 import time
 import traceback
@@ -10,6 +10,9 @@ import torch
 import pickle
 from transforms3d.euler import quat2mat
 import pybullet as pb
+from deoxys.robot_interfaces.xarm_interface import XArmInterface
+from deoxys.franka_interface import FrankaInterface
+from ik_solver import LeapHandIKSolver, ParallelGripperIKSolver, BaseIKSolver
 
 from glob import glob
 from scipy.spatial.transform import Rotation
@@ -32,45 +35,57 @@ fovs = [65, 65, 65]
 
 pb.connect(pb.GUI)
 
-def convert_to_hardware(joint_angles):
-    real_right_robot_hand_q = np.zeros(16)
-    real_right_robot_hand_q[0:16] = joint_angles[0:16]
-    real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
-    real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
-    real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
-    real_right_robot_hand_q[:16] += np.pi
-    return real_right_robot_hand_q
+class LeapHand:
+    def __init__(self, ip, port):
+        self.redis_client = redis.Redis(ip, port=int(port), db=0)
 
-def reverse_conversion(joint_angles):
-    real_right_robot_hand_q = np.zeros(16)
-    real_right_robot_hand_q[0:16] = joint_angles[0:16]
-    real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
-    real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
-    real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
-    real_right_robot_hand_q[:16] -= np.pi
-    return real_right_robot_hand_q
+    def convert_to_hardware(self, joint_angles):
+        real_right_robot_hand_q = np.zeros(16)
+        real_right_robot_hand_q[0:16] = joint_angles[0:16]
+        real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
+        real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
+        real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
+        real_right_robot_hand_q[:16] += np.pi
+        return real_right_robot_hand_q.tolist()
+
+    def reverse_conversion(self, joint_angles):
+        real_right_robot_hand_q = np.zeros(16)
+        real_right_robot_hand_q[0:16] = joint_angles[0:16]
+        real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
+        real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
+        real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
+        real_right_robot_hand_q[:16] -= np.pi
+        return real_right_robot_hand_q.tolist()
 
 
 class RobotEnv:
-    def __init__(self, init_arm, init_hand, handedness="right"):
-        if handedness in ["right", "both"]:
-            self.redis = redis.Redis(host='localhost', port=6669, db=0)
-        self.init_arm = init_arm
-        self.init_hand = init_hand
-        #self.pcd_idx = np.random.choice(10000, 10000, replace=False)
-        self.handedness = handedness
-        self.device = TorchUtils.get_torch_device(try_to_use_cuda=True)
-        left_config_file = "robot_config/alice_left.yml"
-        right_config_file = "robot_config/alice.yml"
-        if handedness == "left" or handedness == "both":
-            self.left_robot_interface = FrankaInterface(
-                left_config_file, use_visualizer=False, has_gripper=True
-            )
-        if handedness == "right" or handedness == "both":
-            self.right_robot_interface = FrankaInterface(
-                right_config_file, use_visualizer=False, has_gripper=False
-            )
+    def __init__(self, robot_arm, gripper_type, action_type, frequency=30):
+        self.gripper_type = gripper_type
+        self.robot_arm = robot_arm
+        self.action_type = action_type
+        self.arm_config = YamlConfig("configs/" + self.robot_arm + '_arm.yaml').as_easydict()
+        self.ip_config = YamlConfig("robot_config/" + self.robot_arm + '.yaml').as_easydict()
 
+        self.arm_init_joints = self.arm_config["rest_position"]
+
+        if gripper_type == "leap":
+            self.leap_hand = LeapHand(self.ip_config.CTRL_HOST.IP_ETH, self.ip_config.CTRL_HOST.HAND_PORT)
+
+        self.solver = BaseIKSolver(self.arm_config)
+        #self.pcd_idx = np.random.choice(10000, 10000, replace=False)
+
+        self.device = TorchUtils.get_torch_device(try_to_use_cuda=True)
+
+        self.impedance_controller_cfg = YamlConfig(self.arm_config['impedance_controller_cfg']).as_easydict()
+        self.position_controller_cfg = YamlConfig(self.arm_config['position_controller_cfg']).as_easydict()
+
+        if self.robot_arm == "xarm":
+            if gripper_type == "xarm_g":
+                self.robot_interface = XArmInterface(general_cfg=self.ip_config, has_gripper=True, control_freq=frequency)
+            else:
+                self.robot_interface = XArmInterface(general_cfg=self.ip_config, has_gripper=False, control_freq=frequency)
+        else:
+            self.robot_interface = FrankaInterface(general_cfg=self.ip_config, use_visualizer=False, has_gripper=False, control_freq=frequency)
 
         # self.REALROBOT_RIGHT_HAND_OFFSET_CONFIG_PATH = "./config/realrobot_right_hand_offset.yml"
         # self.REALROBOT_RIGHT_HAND_OFFSET = None
@@ -78,79 +93,81 @@ class RobotEnv:
         #     self.REALROBOT_RIGHT_HAND_OFFSET = yaml.safe_load(f)
         self.reset_cnt = 0
 
-    def init_robot(self, init_hand_q, init_arm_q, handedness = "right"):
-        robot_interface = self.right_robot_interface if handedness == "right" else self.left_robot_interface
-        self.controller_cfg = YamlConfig("robot_config/joint-impedance-controller.yml").as_easydict()
-        robot_interface._state_buffer = []
-
-
+    def init_robot(self):
+        # robot_interface._state_buffer = []
         # first reset the arm to a initial pose
-        fixed_joints = [
-            0.0,
-            -0.49826458111314524,
-            -0.01990020486871322,
-            -2.4732269941140346,
-            -0.01307073642274261,
-            2.00396583422025,
-            0.8480939705504309
-        ]
-        a = fixed_joints
-        if handedness == "right":
-            paper_q = np.array([0.0 for _ in range(16)])
-        else:
-            a = fixed_joints + [-1]
-        if handedness == "right":
-            initial_hand_q = pickle.loads(self.redis.get("right_leap_joints"))
+
+        hand_target = np.array([0.0 for _ in range(16)])
+        self.solver.set_joint_positions(self.solver.right_arm, self.arm_init_joints)
+        if self.gripper_type == "leap":
+            initial_hand_q = pickle.loads(self.leap_hand.redis_client.get("right_leap_joints"))
+            a = self.arm_start_joints
+        elif self.gripper_type =="xarm_g":
+            initial_hand_q = self.arm_config['gripper_init'][0]
+            a = self.arm_init_joints + [initial_hand_q]
         for i in range(10):
-            robot_interface.control(
-                control_type="JOINT_POSITION",
+            self.robot_interface.control(
+                controller_type="JOINT_POSITION",
                 action=a,
-                mode=0.0,
-                controller_cfg=self.controller_cfg,
+                controller_cfg=self.position_controller_cfg,
             )
             time.sleep(0.5)
-            if handedness == "right":
-                self.redis.set('right_leap_action', pickle.dumps(i/10*convert_to_hardware(paper_q)+(10-i)/10*initial_hand_q))
-        if handedness == "right":
-            input("Press Enter to continue...")
-        # first reset the arm to the mean init state in the hdf5 dataset
-        for i in range(50):
-            a = init_arm_q
-            if handedness == "left":
-                a = np.hstack([init_arm_q, init_hand_q])
-            robot_interface.control(
-                control_type="JOINT_POSITION",
-                action=a,
-                mode=0.0,
-                controller_cfg=self.controller_cfg,
-            )
-            # Hand joint angle may need conversion... hand install is inversed...
-            if handedness == "right":
-                self.redis.set('right_leap_action', pickle.dumps(convert_to_hardware(i/50*init_hand_q+(50-i)/50*paper_q)))
-            time.sleep(0.1)
+
+            if self.gripper_type == "leap":
+                self.leap_hand.redis_client.set('right_leap_action', pickle.dumps(i/10*self.leap_hand.convert_to_hardware(hand_target)+(10-i)/10*initial_hand_q))
+
+        input("Press Enter to continue...")
 
     def get_robot_states(self):
-        # not implemented
-        if self.handedness == "right" or self.handedness == "both":
-            right_arm_joints = np.array(self.right_robot_interface.last_state.q)
-            right_hand_joints = reverse_conversion(pickle.loads(self.redis.get("right_leap_joints")))
-        if self.handedness == "left" or self.handedness == "both":
-            left_arm_joints = np.array(self.left_robot_interface.last_state.q)
-            left_hand_joints = None
+        robot_last_state = self.robot_interface.last_state()
+        right_hand_joints = None
+        ee_pose_full = None
 
-
-        if self.handedness == "right":
-            robot0_arm_joints = right_arm_joints
-            robot0_hand_joints = right_hand_joints
-        elif self.handedness == "left":
-            robot0_arm_joints = left_arm_joints
-            robot0_hand_joints = left_hand_joints
+        if self.robot_arm == "franka":
+            right_arm_joints = np.array(robot_last_state.q)
+            ee_pose_full = np.zeros(6, dtype=np.float32)
         else:
-            robot0_arm_joints = np.hstack([left_arm_joints, right_arm_joints])
-            robot0_hand_joints = right_hand_joints
+            right_arm_joints = np.array(robot_last_state["joint_positions"], dtype=np.float32)
+            ee_pose = np.array(robot_last_state["ee_pos"], dtype=np.float32)
+            ee_quat = np.array(robot_last_state["ee_quat"], dtype=np.float32)
+            # quat_scipy = np.roll(ee_quat, -1)
+            rotation = Rotation.from_quat(ee_quat)
+            ee_rot = rotation.as_euler('xyz', degrees=True)
+            ee_pose_full = np.concatenate([ee_pose, ee_rot])
+
+            if self.gripper_type == "xarm_g":
+                right_hand_joints = np.array(robot_last_state["gripper_pos"], dtype=np.float32)
+
+        if self.gripper_type == "leap":
+            raw_leap_data = self.leap_hand.redis_client.get("right_leap_joints")
+            if raw_leap_data is not None:
+                right_hand_joints = self.leap_hand.reverse_conversion(pickle.loads(raw_leap_data))
+
+        robot0_arm_joints = right_arm_joints
+        robot0_hand_joints = right_hand_joints
         
-        return robot0_arm_joints, robot0_hand_joints
-        
+        return robot0_arm_joints, robot0_hand_joints, ee_pose_full
+
+    def convert_delta_to_joints(self, delta_arm, delta_gripper):
+        arm_joints, gripper_joints, ee_pose = self.get_robot_states()
+        R_robot_to_pb = Rotation.from_euler('z', 90, degrees=True)
+
+        arm_t_robot = ee_pose[:3] + delta_arm[:3]
+
+        rot_curr = Rotation.from_euler('xyz', ee_pose[3:], degrees=True)
+        rot_delta = Rotation.from_euler('xyz', delta_arm[3:], degrees=True)
+        rot_target_robot = rot_delta * rot_curr
+
+        arm_t_pb = R_robot_to_pb.apply(arm_t_robot)
+        rot_target_pb = R_robot_to_pb * rot_target_robot
+
+        # Use ee index one less that the grasp target used for quest etc, this is robot ee.
+        arm_q = self.solver.solve_arm_ik(arm_t_pb, rot_target_pb, ee_idx=self.arm_config["end_effector_index"][0]-1)
+        self.solver.set_joint_positions(self.solver.right_arm, arm_q)
+
+        hand_q = gripper_joints + delta_gripper
+        return arm_q, hand_q
+
     def get_state(self, first=False):
         return None
 
@@ -180,20 +197,52 @@ def run_trained_agent(args):
     device = torch.device("cpu")
 
     # Load trajectory
-    traj = np.load(f"trajs/{args.trajectory}.npz")
-    arm_q_traj = traj["arm_qs"][args.start_idx::args.stride] # 3 is harded coded stride.
-    wrist_poses = traj["wrist_poses"][args.start_idx::args.stride]
-    wrist_orns = traj["wrist_orns"][args.start_idx::args.stride]
-    hand_q_traj = traj["hand_qs"][args.start_idx::args.stride]
+    # traj = np.load(f"trajs/{args.trajectory}.npz")
+    # arm_q_traj = traj["arm_qs"][args.start_idx::args.stride] # 3 is harded coded stride.
+    # wrist_poses = traj["wrist_poses"][args.start_idx::args.stride]
+    # wrist_orns = traj["wrist_orns"][args.start_idx::args.stride]
+    # hand_q_traj = traj["hand_qs"][args.start_idx::args.stride]
+
+    robot_arm = args.robot_arm
+    gripper_type = args.gripper_type
+
+    action_space = "cart_pose_delta"
+
+    if action_space == "joint_positions":
+        arm_q_traj = [[0.0, -1.92, -0.39460, 0.0, 1.51, -0.10435],
+                    [0.0, -1.92, -0.39460, 0.0, 1.61, -0.20435],
+                    [0.0, -1.92, -0.39460, 0.0, 1.71, -0.30435],
+                    [0.0, -1.92, -0.39460, 0.0, 1.61, -0.20435],
+                    [0.0, -1.92, -0.39460, 0.0, 1.51, -0.10435],
+                    [0.0, -1.92, -0.39460, 0.0, 1.51, -0.00435]]
+        hand_q_traj = [[0.0], [0.5], [0.0], [0.0], [0.0], [0.0]]
+    elif action_space == "joint_deltas":
+        arm_q_traj = [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+        hand_q_traj = [[0.0], [0.1], [0.1], [-0.1], [-0.1], [0.0]]
+    elif action_space == "cart_pose":
+        pass
+    elif action_space == "cart_pose_delta":
+        # Pose deltas instead of joint angles
+        arm_q_traj = [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+
+        hand_q_traj = [[0.0], [0.0], [0.0], [0.0], [0.0], [0.0]]
+
     # create environment
-    env = RobotEnv(arm_q_traj[0], hand_q_traj[0], handedness=args.handedness)
-    if args.handedness == "right":
-        env.init_robot(env.init_hand, env.init_arm, handedness="right")
-    elif args.handedness == "left":
-        env.init_robot(env.init_hand, env.init_arm, handedness="left")
-    else:
-        env.init_robot(env.init_hand[:1], env.init_arm[:7], handedness="left")
-        env.init_robot(env.init_hand[1:], env.init_arm[7:], handedness="right")
+    env = RobotEnv(robot_arm, gripper_type, action_type=action_space)
+
+    if "delta" not in action_space:
+        env.init_robot(init_arm=arm_q_traj[0], init_hand=hand_q_traj[0])
+
     # maybe set seed
     if args.seed is not None:
         np.random.seed(args.seed)
@@ -207,38 +256,35 @@ def run_trained_agent(args):
     with torch.no_grad():
         while True:
             if arrived:
-                goal_arm = arm_q_traj[step]
-                goal_hand = hand_q_traj[step]
-                print("play back")
-                arrived = False
-                step += 1
                 if step >= len(arm_q_traj):
                     break
+                goal_arm = arm_q_traj[step]
+                goal_hand = hand_q_traj[step]
+                print(f"Step: {step}")
+                arrived = False
+                step += 1
             
-            goal_arm_ = goal_arm
-            a = goal_arm_
-            if args.handedness == "left" or args.handedness == "both":
-                a = np.hstack([goal_arm_[:7] , goal_hand[:1]])
-                env.left_robot_interface.control(
-                    control_type="JOINT_IMPEDANCE",
-                    action=a,
-                    mode=0.0,
-                    controller_cfg=env.controller_cfg,
-                )
-                goal_hand_ = goal_hand[:1].copy()
-            if args.handedness == "right" or args.handedness == "both":
-                a = goal_arm_[(0 if args.handedness == "right" else 7):]
-                env.right_robot_interface.control(
-                    control_type="JOINT_IMPEDANCE",
-                    action=a,
-                    mode=0.0,
-                    controller_cfg=env.controller_cfg,
-                )
-                goal_hand_ = goal_hand[(0 if args.handedness == "right" else 1):].copy()
-                goal_hand_ = convert_to_hardware(goal_hand_)
-                env.redis.set('right_leap_action', pickle.dumps(goal_hand_))
+            goal_arm_ = goal_arm.copy()
+            goal_hand_ = goal_hand.copy()
 
-            arrived = env.check_arrived(goal_arm, goal_hand_)
+            if "delta" in action_space:
+                goal_arm_j_, goal_hand_j_ = env.convert_delta_to_joints(goal_arm_, goal_hand_)
+            else:
+                goal_arm_j_ = goal_arm.copy()
+                goal_hand_j_ = goal_hand.copy()
+
+            if env.robot_arm == "franka":
+                a = goal_arm_j_
+                env.robot_interface.control(controller_type="JOINT_IMPEDANCE", action=a, controller_cfg=env.impedance_controller_cfg)
+            else:
+                if env.gripper_type == "xarm_g":
+                    a = np.concatenate([goal_arm_j_, goal_hand_j_])
+                env.robot_interface.control(controller_type="JOINT_POSITION", action=a)
+            if env.gripper_type == "leap":
+                goal_hand_ = env.leap_hand.convert_to_hardware(goal_hand_)
+                env.leap_hand.redis_client.set('right_leap_action', pickle.dumps(goal_hand_))
+
+            arrived = env.check_arrived(goal_arm_j_, goal_hand_j_)
 
             substep += 1
             # print control frequency
@@ -247,16 +293,15 @@ def run_trained_agent(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
 
     # Trajectory to load and replay
-    parser.add_argument(
-        "--trajectory",
-        type=str,
-        required=True,
-        help="path to npz file containing trajectory to replay",
-    )
-
+    # parser.add_argument(
+    #     "--trajectory",
+    #     type=str,
+    #     required=True,
+    #     help="path to npz file containing trajectory to replay",
+    # )
 
     # for seeding before starting rollouts
     parser.add_argument(
@@ -265,28 +310,35 @@ if __name__ == "__main__":
         default=None,
         help="(optional) set seed for rollouts",
     )
-
     parser.add_argument(
         "--stride",
         type=int,
         default=1
     )
-
     parser.add_argument(
         "--action_space",
         type=str,
         default="joint")
 
     parser.add_argument(
-        "--handedness", 
-        type=str, 
-        default="right"
-    )
-
-    parser.add_argument(
         "--start_idx",
         type=int,
         default=0
+    )
+    parser.add_argument(
+        "--robot_arm",
+        type=str,
+        default="xarm"
+    )
+    parser.add_argument(
+        "--gripper_type",
+        type=str,
+        default="xarm_g"
+    )
+    parser.add_argument(
+        "--error_path",
+        type=str,
+        default="error.log"
     )
     args = parser.parse_args()
 

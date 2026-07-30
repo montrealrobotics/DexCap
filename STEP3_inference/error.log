@@ -1,0 +1,11 @@
+run failed with error:
+name 'delta' is not defined
+
+Traceback (most recent call last):
+  File "/workspace/DexCap/STEP3_inference/replay_trajectory.py", line 347, in <module>
+    run_trained_agent(args)
+  File "/workspace/DexCap/STEP3_inference/replay_trajectory.py", line 272, in run_trained_agent
+    goal_arm_j_, goal_hand_j_ = env.convert_delta_to_joints(goal_arm_, goal_hand_)
+  File "/workspace/DexCap/STEP3_inference/replay_trajectory.py", line 155, in convert_delta_to_joints
+    arm_t_robot = ee_pose[:3] + delta[:3]
+NameError: name 'delta' is not defined

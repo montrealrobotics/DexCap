@@ -4,11 +4,14 @@ from argparse import ArgumentParser
 import numpy as np
 from scipy.spatial.transform import Rotation
 import pybullet as pb
+import os
+import h5py
 import yaml
 from rigidbodySento import create_primitive_shape
 from rokoko_module import RokokoModule
 #from realsense_module import DepthCameraModule
-from quest_robot_module import QuestRightArmLeapModule, QuestRightArmXArmGripperModule
+from quest_teleop_module import QuestTeleopModule
+from ik_solver import LeapHandIKSolver, ParallelGripperIKSolver
 
 # Robot deployment imports
 import redis
@@ -51,10 +54,11 @@ def init_leaphand(redis_client):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--frequency", type=int, default=30)
-    parser.add_argument("--real_robot", type=bool, default=False)
-    parser.add_argument("--use_gloves", type=bool, default=False)
-    parser.add_argument("--robot_arm", type=str, default="franka")
-    parser.add_argument("--gripper_type", type=str, default="leap")
+    parser.add_argument("--real_robot", type=bool, default=True)
+    parser.add_argument("--use_gloves", type=bool, default=True)
+    parser.add_argument("--use_camera", type=bool, default=False)
+    parser.add_argument("--robot_arm", type=str, default="xarm")
+    parser.add_argument("--gripper_type", type=str, default="xarm_g")
     args = parser.parse_args()
     c = pb.connect(pb.GUI)
     vis_sp = []
@@ -92,7 +96,12 @@ if __name__ == "__main__":
 
     if hand_ctrl:
         rokoko = RokokoModule(ip_config)
-    quest = QuestRightArmXArmGripperModule(ip_config, arm_config, vis_sp=None)
+
+    if gripper == "leap":
+        solver = LeapHandIKSolver(arm_config)
+    else:
+        solver = ParallelGripperIKSolver(arm_config)
+    quest = QuestTeleopModule(ip_config, solver=solver)
 
     start_time = time.time()
     fps_counter = 0
@@ -100,6 +109,13 @@ if __name__ == "__main__":
     logger.info("Initialization completed... Start app in headset")
     current_ts = time.time()
     restart_app_flag = True
+    no_arm_ctrl = True
+
+    recording = False
+    current_actions = []
+    current_joint_pos = []
+    current_ee_pos = []
+    demo_count = 0
     while True:
         now = time.time()
         # TODO: May cause communication issues, need to tune on AR side.
@@ -110,7 +126,13 @@ if __name__ == "__main__":
         try:
             #point_cloud = camera.receive()
             if hand_ctrl:
-                left_positions, right_positions = rokoko.receive()
+                while True:
+                    try:
+                        left_positions, right_positions = rokoko.receive()
+                        break
+                    except socket.timeout:
+                        logger.warning("Waiting for Rokoko data...")
+                        continue
                 rokoko.send_joint_data(np.vstack([left_positions, right_positions]))
             status, right_wrist, head_pose= quest.receive()
             if status == StatusCode.SOCKET_TIMEOUT:
@@ -121,30 +143,99 @@ if __name__ == "__main__":
                     restart_app_flag = False
             elif status == StatusCode.SUCCESS:
                 if right_wrist is not None:
-                    right_wrist_orn = Rotation.from_quat(right_wrist[1])
-                    right_wrist_pos = right_wrist[0]
+                    right_wrist_pos, right_wrist_rot = right_wrist
+                    right_wrist_orn = Rotation.from_quat(right_wrist_rot)
                     head_pos = head_pose[0]
                     head_orn = Rotation.from_quat(head_pose[1])
                     if hand_ctrl:
                         hand_tip_pose = right_wrist_orn.apply(right_positions) + right_wrist_pos
                         hand_tip_pose = hand_tip_pose[[1,2,3,0]]
-                        right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)
-
+                        right_arm_q, right_hand_q = solver.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)
                     else:
-                        right_arm_q, right_hand_q = quest.solve_system_world(right_wrist_pos, right_wrist_orn)
+                        right_arm_q, right_hand_q = solver.solve_system_world(right_wrist_pos, right_wrist_orn)
                     quest.send_ik_result(right_arm_q, right_hand_q)
                     if quest.data_dir is not None:
+                        if not recording:
+                            recording = True
+                            current_actions = []
+                            current_joint_pos = []
+                            current_ee_pos = []
+                            current_ee_quat = []
+                            current_gripper_qpos = []
+                            current_agentview_imgs, current_eye_in_hand_imgs = [], []
+
                         if real_robot:
                             if robot_arm == "xarm":
                                 if gripper == 'xarm_g':
-                                    right_arm_q = right_arm_q + (right_hand_q[0],)
-                                robot_interface.control(controller_type="JOINT_POSITION", action=right_arm_q)
-
+                                    if no_arm_ctrl:
+                                        fixed_q = np.array(arm_config['fixed_joints'][:-1], dtype=np.float64)
+                                        gripper_q = np.array([right_hand_q[0]], dtype=np.float64)
+                                        robot_q = np.concatenate([fixed_q, gripper_q])
+                                    else:
+                                        robot_q = np.concatenate([right_arm_q, right_hand_q])
+                                robot_interface.control(controller_type="JOINT_POSITION", action=robot_q)
                             else:
                                 robot_interface.control(controller_type="JOINT_IMPEDANCE", action=right_arm_q, controller_cfg=impedance_controller_cfg)
 
                             if gripper == "leap":
                                 redis_client.set('right_leap_action', pickle.dumps(convert_to_hardware(right_hand_q)))
+
+                        action_vec = np.concatenate([right_arm_q, right_hand_q])
+                        current_actions.append(action_vec)
+
+                        if real_robot:
+                            robot_last_state = robot_interface.last_state()
+
+                            if robot_arm == "xarm":
+                                joint_positions = np.array(robot_last_state["joint_positions"], dtype=np.float32)
+                                ee_pose = np.array(robot_last_state["ee_pos"], dtype=np.float32)
+                                ee_quat = np.array(robot_last_state["ee_quat"], dtype=np.float32)
+                                gripper_qpos = np.array(robot_last_state["gripper_pos"], dtype=np.float32)
+                            else:
+                                joint_positions = np.array(robot_last_state.q, dtype=np.float32)
+                                ee_quat, ee_pose = robot_interface.last_eef_quat_and_pos()
+                                ee_pose = np.array(ee_pose, dtype=np.float32)
+                                ee_quat = np.array(ee_quat, dtype=np.float32)
+
+                                if gripper == "leap":
+                                    gripper_qpos = np.array(right_hand_q, dtype=np.float32)
+                                else:
+                                    gripper_qpos = np.array(robot_interface.last_gripper_q(), dtype=np.float32)
+
+                            current_joint_pos.append(joint_positions)
+                            current_ee_pos.append(ee_pose)
+                            current_ee_quat.append(ee_quat)
+                            current_gripper_qpos.append(gripper_qpos)
+                        else:
+                            current_joint_pos.append(np.array(right_arm_q, dtype=np.float32))
+                            current_ee_pos.append(np.array(right_wrist_pos, dtype=np.float32))
+                            current_ee_quat.append(np.array(right_wrist[1], dtype=np.float32))
+                            current_gripper_qpos.append(np.array(right_hand_q, dtype=np.float32))
+
+                    else:
+                        if recording:
+                            recording = False
+                            if len(current_actions) > 0:
+                                traj_count += 1
+                                hdf5_path = os.path.join(quest.prev_data_dir, "traj.hdf5")
+
+                                with h5py.File(hdf5_path, "a") as f:
+                                    data_grp = f.require_group("data")
+                                    ep_grp = data_grp.create_group(f"traj_{traj_count}")
+                                    ep_grp.create_dataset("actions", data=np.array(current_actions, dtype=np.float32))
+
+                                    obs_grp = ep_grp.create_group("obs")
+                                    obs_grp.create_dataset("robot0_joint_pos", data=np.array(current_joint_pos, dtype=np.float32))
+                                    obs_grp.create_dataset("robot0_eef_pos", data=np.array(current_ee_pos, dtype=np.float32))
+                                    obs_grp.create_dataset("robot0_eef_quat", data=np.array(current_ee_quat, dtype=np.float32))
+                                    obs_grp.create_dataset("robot0_gripper_qpos", data=np.array(current_gripper_qpos, dtype=np.float32))
+
+                                    if args.use_camera and len(current_agentview_imgs) > 0:
+                                        obs_grp.create_dataset("agentview_image", data=np.array(current_agentview_imgs, dtype=np.uint8))
+                                        obs_grp.create_dataset("robot0_eye_in_hand_image", data=np.array(current_eye_in_hand_imgs, dtype=np.uint8))
+
+                                logger.info(f"Trajectory saved ({len(current_actions)} steps) -> {hdf5_path} [traj_{traj_count}]")
+
         except socket.error as e:
             logger.error(e)
             pass

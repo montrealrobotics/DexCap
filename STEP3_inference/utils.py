@@ -26,6 +26,8 @@ class StatusCode(IntEnum):
     SUCCESS = 0
     APP_RESTART = 1
     SOCKET_TIMEOUT = 2
+    STOP = 3
+    REMOVE = 4
 
 def get_logger(name="dexcap"):
     logger = logging.getLogger(name)
