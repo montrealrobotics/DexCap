@@ -106,6 +106,21 @@ class DepthCameraModule:
                 self.vis.update_renderer()
         return np.hstack([vis_verts, vis_colors])
 
+    def receive_rgb(self, resize_dim=None):
+        frames = self.pipeline.wait_for_frames()
+        aligned_frames = self.align.process(frames)
+        color_frame = aligned_frames.get_color_frame()
+        if not color_frame:
+            return None
+
+        rgb_image = np.asanyarray(color_frame.get_data(), dtype=np.uint8)
+
+        if resize_dim is not None:
+            import cv2
+            rgb_image = cv2.resize(rgb_image, resize_dim, interpolation=cv2.INTER_AREA)
+
+        return rgb_image
+
     def visualize_pcd(self, pcd):
         vis_verts = pcd.copy()[:,:3]
         vis_colors = pcd.copy()[:,3:]

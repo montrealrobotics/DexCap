@@ -3,7 +3,7 @@ import json
 import numpy as np
 from scipy.spatial.transform import Rotation
 import pybullet as pb
-from rigidbodySento import create_primitive_shape
+from dexcap.sensors.rigidbodySento import create_primitive_shape
 
 class RokokoModule:
     hand_link_names = ["Hand",
@@ -23,7 +23,8 @@ class RokokoModule:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
         self.sock.bind(("", config.TELEOP.ROKOKO_PORT))
-        self.sock.setblocking(1)
+        # self.sock.setblocking(1)
+        self.sock.settimeout(5)
         self.tip_vis_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.HAND_INFO_PORT)
         self.visualization = visualization
@@ -111,7 +112,10 @@ class RokokoModule:
         self.tip_vis_sock.sendto(json_message.encode(), self.tip_vis_dest)
 
     def receive(self):
-        data, _ = self.sock.recvfrom(40000)
+        try:
+            data, _ = self.sock.recvfrom(40000)
+        except socket.timeout as e:
+            raise
         left_positions, right_positions = self.Unpack(data.decode())
         return left_positions, right_positions
     

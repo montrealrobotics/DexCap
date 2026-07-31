@@ -13,19 +13,23 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - XAUTHORITY=/tmp/.docker.xauth
+      - TZ=America/New_York
+      - NVIDIA_DRIVER_CAPABILITIES=all
     volumes:
       # Mount the entire workspace (adjust path based on your workspace structure)
       # This assumes docker-compose.yml is in DexCap/ and mounts the workspace root
       - ../:/workspace
       # Mount for X11 forwarding (if needed for GUI)
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /dev:/dev
       # Optional: Mount a persistent data directory
     working_dir: /workspace/DexCap
     stdin_open: true
     tty: true
+    privileged: True
     ports:
-      - "5555:5555" # Deoxys Arm sub/pub
-      - "5556:5556" # Deoxys Arm sub/pub
       - "5557:5557" # Deoxys Gripper sub/pub
       - "5558:5558" # Deoxys Gripper sub/pub
       - "6669:6669"
@@ -33,6 +37,5 @@ services:
       - "12346:12346/udp" # Pose command port (from quest)
       - "12345:12345/udp" # IK result port (to quest)
       - "65432:65432/udp" # Hand finger-tip pose info pot (to quest)
-
 
 #export DISPLAY=172.16.0.2:0

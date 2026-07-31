@@ -5,7 +5,7 @@ LOCAL_HOST:
 
 CTRL_HOST:
   NAME: "droid"
-  IP_ETH: 192.168.42.10
+  IP_ETH: "host.docker.internal"
   ARM_PUB_PORT: 5556
   ARM_SUB_PORT: 5555
   GRIPPER_PUB_PORT: 5558
