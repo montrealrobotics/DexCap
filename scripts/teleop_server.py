@@ -238,9 +238,9 @@ if __name__ == "__main__":
                                 camera_obs, camera_timestamp = camera_reader.read_cameras()
                                 obs_dict.update(camera_obs)
                                 obs_dict["timestamp"]["cameras"] = camera_timestamp
-
+                                image_observations = obs_dict["image"]
                                 img_obs = extract_img_observation(
-                                    obs_dict, left_camera_id, right_camera_id, wrist_camera_id
+                                    image_observations, left_camera_id, right_camera_id, wrist_camera_id
                                 )
 
                                 # Process and collect images

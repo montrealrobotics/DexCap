@@ -65,8 +65,7 @@ def check_connection(host_name, ip_address, logger=None):
         logger.warning(f"{host_name} ({ip_address}) not found. Retrying in 5s...")
         time.sleep(2)
 
-def extract_img_observation(obs_dict, left_camera_id, right_camera_id, wrist_camera_id):
-    image_observations = obs_dict["image"]
+def extract_img_observation(image_observations, left_camera_id, right_camera_id, wrist_camera_id):
     left_image, right_image, wrist_image = None, None, None
     for key in image_observations:
         # Note the "left" below refers to the left camera in the stereo pair.

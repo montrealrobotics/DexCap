@@ -9,6 +9,7 @@ import redis
 import torch
 import pickle
 from transforms3d.euler import quat2mat
+from dexcap.sensors.cameras.usb_camera_module import MultiCameraWrapper
 import pybullet as pb
 from deoxys.robot_interfaces.xarm_interface import XArmInterface
 from deoxys.franka_interface import FrankaInterface
@@ -60,13 +61,14 @@ class LeapHand:
 
 
 class RobotEnv:
-    def __init__(self, robot_arm, gripper_type, action_type, frequency=30):
+    def __init__(self, robot_arm, gripper_type, action_type,  camera_kwargs={}, frequency=30):
         self.gripper_type = gripper_type
         self.robot_arm = robot_arm
         self.action_type = action_type
         pkg_path = str(files("dexcap").joinpath("configs/"))
         self.arm_config = YamlConfig(pkg_path + "/robot_config/" + self.robot_arm + '_arm.yaml').as_easydict()
         self.ip_config = YamlConfig(pkg_path + "/" + self.robot_arm + '.yaml').as_easydict()
+        self.camera_reader = MultiCameraWrapper(camera_kwargs)
 
         self.arm_init_joints = self.arm_config["rest_position"]
 
@@ -120,7 +122,25 @@ class RobotEnv:
 
         input("Press Enter to continue...")
 
-    def get_robot_states(self):
+    def get_observation(self):
+        obs_dict = {"timestamp": {}}
+
+        # Robot State #
+        state_dict, timestamp_dict = self.get_robot_state()
+        obs_dict["robot_state"] = state_dict
+
+        # Camera Readings #
+        camera_obs, camera_timestamp = self.read_cameras()
+        obs_dict.update(camera_obs)
+        obs_dict["timestamp"]["cameras"] = camera_timestamp
+        obs_dict["timestamp"]["robot_state"] = timestamp_dict
+
+        return obs_dict
+
+    def get_robot_state(self):
+        read_start = time.time_ns()
+        robot_states_dict = {}
+        timestamp_dict = {}
         robot_last_state = self.robot_interface.last_state()
         right_hand_joints = None
         ee_pose_full = None
@@ -138,7 +158,7 @@ class RobotEnv:
             ee_pose_full = np.concatenate([ee_pose, ee_rot])
 
             if self.gripper_type == "xarm_g":
-                right_hand_joints = np.array(robot_last_state["gripper_pos"], dtype=np.float32)
+                right_hand_joints = robot_last_state["gripper_pos"]
 
         if self.gripper_type == "leap":
             raw_leap_data = self.leap_hand.redis_client.get("right_leap_joints")
@@ -147,11 +167,23 @@ class RobotEnv:
 
         robot0_arm_joints = right_arm_joints
         robot0_hand_joints = right_hand_joints
-        
-        return robot0_arm_joints, robot0_hand_joints, ee_pose_full
+        robot_states_dict["robot0_arm_joints"] = robot0_arm_joints
+        robot_states_dict["robot0_hand_joints"] = robot0_hand_joints
+        robot_states_dict["ee_pose_full"] = ee_pose_full
+        timestamp_dict["read_start"] = read_start
+        timestamp_dict["read_end"] = time.time_ns()
+
+        return robot_states_dict, timestamp_dict
+
+    def read_cameras(self):
+        return self.camera_reader.read_cameras()
 
     def convert_delta_to_joints(self, delta_arm, delta_gripper):
-        arm_joints, gripper_joints, ee_pose = self.get_robot_states()
+        states = self.get_robot_states()
+
+        arm_joints = states["robot0_arm_joints"]
+        gripper_joints = states["robot0_hand_joints"]
+        ee_pose = ["ee_pose_full"]
         R_robot_to_pb = Rotation.from_euler('z', 90, degrees=True)
 
         arm_t_robot = ee_pose[:3] + delta_arm[:3]
