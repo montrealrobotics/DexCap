@@ -200,6 +200,10 @@ if __name__ == "__main__":
                                         robot_q = np.concatenate([fixed_q, gripper_q])
                                     else:
                                         robot_q = np.concatenate([right_arm_q, right_hand_q])
+                                else:
+                                    # LEAP hand is driven over redis, not through the arm interface,
+                                    # so the arm command is just the 6 arm joints.
+                                    robot_q = np.asarray(right_arm_q, dtype=np.float64)
                                 robot_interface.control(controller_type="JOINT_POSITION", action=robot_q)
                             else:
                                 robot_interface.control(controller_type="JOINT_IMPEDANCE", action=right_arm_q, controller_cfg=impedance_controller_cfg)

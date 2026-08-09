@@ -4,6 +4,11 @@ from scipy.spatial.transform import Rotation
 from importlib.resources import files
 
 
+# PyBullet IK iterations for the LEAP finger chains. Must match FINGER_IK_ITERATIONS in robosuite's
+# quest_rokoko.py so sim and real retarget the glove to the same hand pose.
+FINGER_IK_ITERATIONS = 200
+
+
 class BaseIKSolver:
     """Base PyBullet kinematics loader and helper methods."""
 
@@ -96,7 +101,8 @@ class LeapHandIKSolver(BaseIKSolver):
         self.right_hand_orn_offset = Rotation.from_euler("xyz", [-np.pi, 0.0, 0.0])
         self.right_palm_orn_offset = np.array([-0.1, -0.05, 0.05, 0.0, 0.0, -np.pi / 2])
 
-        self.right_hand = pb.loadURDF("assets/leap_hand/robot_pybullet.urdf")
+        hand_urdf = str(files("dexcap").joinpath("robot_descriptions/leap_hand/robot_pybullet.urdf"))
+        self.right_hand = pb.loadURDF(hand_urdf, useFixedBase=True)
         self.set_joint_positions(self.right_hand, self.RIGHT_HAND_Q)
         (
             self.right_hand_lower_limits,
@@ -122,7 +128,7 @@ class LeapHandIKSolver(BaseIKSolver):
                 upperLimits=self.right_hand_upper_limits,
                 jointRanges=self.right_hand_joint_ranges,
                 restPoses=self.RIGHT_HAND_Q,
-                maxNumIterations=40,
+                maxNumIterations=FINGER_IK_ITERATIONS,
                 residualThreshold=0.001,
             )
             target_q += list(q_slice[4 * i : 4 * (i + 1)])
