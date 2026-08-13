@@ -24,12 +24,14 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt, datefmt="%H:%M:%S")
         return formatter.format(record)
 
+
 class StatusCode(IntEnum):
     SUCCESS = 0
     APP_RESTART = 1
     SOCKET_TIMEOUT = 2
     STOP = 3
     START = 4
+
 
 def get_logger(name="dexcap"):
     logger = logging.getLogger(name)

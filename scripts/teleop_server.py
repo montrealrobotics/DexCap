@@ -19,6 +19,7 @@ import h5py
 import redis
 import pickle
 from deoxys.robot_interfaces.xarm_interface import XArmInterface
+from deoxys.robot_interfaces.utils.utils import ActionType
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils import YamlConfig
 from dexcap.utils.utils import check_connection, get_logger, StatusCode, extract_img_observation, resize_with_pad
@@ -50,6 +51,7 @@ def init_robot(robot_interface, arm_start_joints, position_controller_cfg):
         robot_interface.control(
             controller_type="JOINT_POSITION",
             action=arm_start_joints,
+            action_type=ActionType.move_to,
             controller_cfg=position_controller_cfg,
         )
         time.sleep(0.5)
@@ -65,8 +67,8 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--frequency", type=int, default=30)
     parser.add_argument("--real_robot", type=bool, default=True)
-    parser.add_argument("--use_gloves", type=bool, default=True)
-    parser.add_argument("--use_camera", type=bool, default=True)
+    parser.add_argument("--use_gloves", type=bool, default=False)
+    parser.add_argument("--use_camera", type=bool, default=False)
     parser.add_argument("--robot_arm", type=str, default="xarm")
     parser.add_argument("--gripper_type", type=str, default="xarm_g")
     args = parser.parse_args()
@@ -138,7 +140,7 @@ if __name__ == "__main__":
     logger.info("Initialization completed... Start app in headset")
     current_ts = time.time()
     restart_app_flag = True
-    no_arm_ctrl = True
+    no_arm_ctrl = False
 
     recording = False
     traj_count = 0
@@ -204,7 +206,8 @@ if __name__ == "__main__":
                                     # LEAP hand is driven over redis, not through the arm interface,
                                     # so the arm command is just the 6 arm joints.
                                     robot_q = np.asarray(right_arm_q, dtype=np.float64)
-                                robot_interface.control(controller_type="JOINT_POSITION", action=robot_q)
+                                robot_interface.control(controller_type="JOINT_POSITION", action=robot_q, action_type=ActionType.delta)
+
                             else:
                                 robot_interface.control(controller_type="JOINT_IMPEDANCE", action=right_arm_q, controller_cfg=impedance_controller_cfg)
 
@@ -312,6 +315,8 @@ if __name__ == "__main__":
                                 current_eye_in_hand_imgs.clear()
                                 current_agentview_left_imgs.clear()
                                 current_agentview_right_imgs.clear()
+                                time.sleep(1.0)
+                                init_robot(robot_interface, arm_start_joints, position_controller_cfg)
 
 
         except socket.error as e:
