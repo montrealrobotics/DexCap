@@ -31,6 +31,7 @@ class StatusCode(IntEnum):
     SOCKET_TIMEOUT = 2
     STOP = 3
     START = 4
+    REMOVE = 5
 
 
 def get_logger(name="dexcap"):
@@ -70,13 +71,15 @@ def check_connection(host_name, ip_address, logger=None):
 def extract_img_observation(image_observations, left_camera_id, right_camera_id, wrist_camera_id):
     left_image, right_image, wrist_image = None, None, None
     for key in image_observations:
-        # Note the "left" below refers to the left camera in the stereo pair.
-        # The model is only trained on left stereo cams, so we only feed those.
-        if left_camera_id in key and "left" in key:
+        # A stereo camera gives "<id>_left"/"<id>_right" images and the model is only trained on the
+        # left one; a single-lens camera gives "<id>". Match exactly, so camera "2" doesn't match "12".
+        def is_camera(camera_id):
+            return bool(camera_id) and key in (str(camera_id), f"{camera_id}_left")
+        if is_camera(left_camera_id):
             left_image = image_observations[key]
-        elif right_camera_id in key and "left" in key:
+        elif is_camera(right_camera_id):
             right_image = image_observations[key]
-        elif wrist_camera_id in key and "left" in key:
+        elif is_camera(wrist_camera_id):
             wrist_image = image_observations[key]
 
     # Drop the alpha dimension and convert to RGB

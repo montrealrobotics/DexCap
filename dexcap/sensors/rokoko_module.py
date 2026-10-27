@@ -1,5 +1,7 @@
 import socket
 import json
+import threading
+import time
 import numpy as np
 from scipy.spatial.transform import Rotation
 import pybullet as pb
@@ -29,6 +31,15 @@ class RokokoModule:
         self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.HAND_INFO_PORT)
         self.visualization = visualization
         self.cnt = 0
+        self.hands_present = (False, False)
+        # Last time each hand's raw data changed; a powered-off glove can stay in the
+        # stream with frozen values, while a live glove always jitters slightly.
+        self._last_raw = [None, None]
+        self._last_change = [None, None]
+        self._latest = None
+        self._latest_ts = None
+        self._lock = threading.Lock()
+        self._running = False
         if self.visualization:
             pb.connect(pb.GUI)
             self.vis_sp_left = [create_primitive_shape(pb, 0.01, pb.GEOM_SPHERE, (0.01,), collidable=False) for _ in range(21)]
@@ -71,6 +82,19 @@ class RokokoModule:
                 rel_pos = wrist_orn.inv().apply(pos - wrist_position)
                 right_link_positions.append(rel_pos)
             right_link_positions = -np.array(right_link_positions)
+        # A glove that is not linked to the actor is missing from the packet; keep the
+        # array shapes fixed so downstream indexing works, and report it via hands_present.
+        self.hands_present = (len(left_link_positions) == 21, len(right_link_positions) == 21)
+        now = time.time()
+        for i, positions in enumerate((left_link_positions, right_link_positions)):
+            raw = np.asarray(positions).tobytes()
+            if raw != self._last_raw[i]:
+                self._last_raw[i] = raw
+                self._last_change[i] = now
+        if not self.hands_present[0]:
+            left_link_positions = np.zeros((21, 3))
+        if not self.hands_present[1]:
+            right_link_positions = np.zeros((21, 3))
         left_link_positions, right_link_positions = self.adjust_bone_length(left_link_positions, right_link_positions, RokokoModule.scale)
         tip_id = RokokoModule.tip_id[self.cnt]
         # self.cnt += 1
@@ -119,6 +143,52 @@ class RokokoModule:
         left_positions, right_positions = self.Unpack(data.decode())
         return left_positions, right_positions
     
+    def start_background(self, stats=None):
+        """Receive glove packets on a thread so a silent glove never blocks the caller."""
+        self._running = True
+        self.sock.settimeout(1.0)
+
+        def loop():
+            while self._running:
+                try:
+                    left_positions, right_positions = self.receive()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                except Exception as e:
+                    if stats is not None:
+                        stats.set_detail(last_error=repr(e))
+                    continue
+                with self._lock:
+                    self._latest = (left_positions, right_positions)
+                    self._latest_ts = time.time()
+                if stats is not None:
+                    stats.mark(left_glove=self._glove_state(0), right_glove=self._glove_state(1))
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def _glove_state(self, hand, frozen_after=2.0):
+        if not self.hands_present[hand]:
+            return "MISSING"
+        frozen = self.frozen_for(hand)
+        if frozen is not None and frozen > frozen_after:
+            return f"frozen {frozen:.0f}s (powered off?)"
+        return "live"
+
+    def frozen_for(self, hand):
+        """Seconds since hand 0 (left) / 1 (right) last changed, or None if never received."""
+        last = self._last_change[hand]
+        return None if last is None else time.time() - last
+
+    def latest(self, max_age=0.5):
+        """Most recent (left, right) tip positions, or None if older than max_age seconds."""
+        with self._lock:
+            if self._latest_ts is None or time.time() - self._latest_ts > max_age:
+                return None
+            return self._latest
+
     def visualize_hand(self, left_positions, right_positions):
         for i in range(len(left_positions)):
             pb.resetBasePositionAndOrientation(self.vis_sp_left[i], left_positions[i], (0,0,0,1))
@@ -126,6 +196,7 @@ class RokokoModule:
             pb.resetBasePositionAndOrientation(self.vis_sp_right[i], right_positions[i], (0,0,0,1))
     
     def close(self):
+        self._running = False
         self.sock.close()
 
 if __name__ == "__main__":
@@ -135,4 +206,4 @@ if __name__ == "__main__":
         left_positions, right_positions = rokoko.receive()
         left_positions, right_positions = rokoko.adjust_bone_length(left_positions, right_positions, scale)
         rokoko.visualize_hand([], right_positions)
-        #rokoko.send_joint_data(np.vstack([left_positions, right_positions]))
+        #rokoko.send_joint_data(np.vstack([left_positions, right_positions]))

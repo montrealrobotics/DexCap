@@ -8,16 +8,22 @@ from dexcap.utils.utils import StatusCode
 
 
 class QuestTeleopModule:
-    def __init__(self, ip_config, solver):
+    def __init__(self, ip_config, solver, timeout=5, data_root="data"):
         self.solver = solver
+        self.data_root = data_root
+        # Optional StreamStats (dexcap.utils.status) for the incoming pose stream and outgoing IK results
+        self.stats_in = None
+        self.stats_out = None
         self.vr_ip = ip_config.TELEOP.VR_HOST
         self.pose_cmd_port = ip_config.TELEOP.POSE_CMD_PORT
         self.ik_result_port = ip_config.TELEOP.IK_RESULT_PORT
 
         self.wrist_listener_s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.wrist_listener_s.bind(("", self.pose_cmd_port))
-        self.wrist_listener_s.settimeout(5)
-        self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 0)
+        self.timeout = timeout
+        self.wrist_listener_s.settimeout(timeout)
+        # Default receive buffer: receive() drains it every call, so poses stay fresh without the
+        # kernel dropping one-off control messages such as WorldFrame
         self.wrist_listener_s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         self.world_frame = None
@@ -53,12 +59,38 @@ class QuestTeleopModule:
         return np.all(np.abs(np.array(this_q) - np.array(prev_q)) < threshold)
 
     def receive(self):
+        """Handle every message queued since the last call, in order, and return the newest pose.
+
+        Control messages (WorldFrame, Start, Stop, Remove) are sent once, so none may be skipped;
+        older poses are dropped so the robot follows the latest one. Without a pose in the batch,
+        the result of the last message is returned.
+        """
         try:
-            data, _ = self.wrist_listener_s.recvfrom(1024)
+            data, addr = self.wrist_listener_s.recvfrom(1024)
         except socket.timeout:
             return StatusCode.SOCKET_TIMEOUT, None, None
+        result = self._handle(data, addr)
+        newest_pose = result if result[1] is not None else None
 
+        self.wrist_listener_s.setblocking(False)
+        try:
+            while True:
+                try:
+                    data, addr = self.wrist_listener_s.recvfrom(1024)
+                except BlockingIOError:
+                    break
+                result = self._handle(data, addr)
+                if result[1] is not None:
+                    newest_pose = result
+        finally:
+            self.wrist_listener_s.settimeout(self.timeout)
+        return newest_pose if newest_pose is not None else result
+
+    def _handle(self, data, addr):
         data_string = data.decode()
+        if self.stats_in is not None:
+            self.stats_in.mark(sender=addr[0], last_msg=data_string.split(":")[0][:12],
+                               world_frame="set" if self.world_frame is not None else "not set")
         now = datetime.datetime.now()
 
         if data_string.startswith("WorldFrame"):
@@ -70,13 +102,13 @@ class QuestTeleopModule:
             self.solver.set_joint_positions(self.solver.right_arm, self.solver.rest_position)
             self.solver.set_joint_positions(self.solver.right_hand, self.solver.RIGHT_HAND_Q)
 
-            os.makedirs(f"data/{self.wf_receive_ts}", exist_ok=True)
-            np.save(f"data/{self.wf_receive_ts}/WorldFrame.npy", self.world_frame)
+            os.makedirs(os.path.join(self.data_root, self.wf_receive_ts), exist_ok=True)
+            np.save(os.path.join(self.data_root, self.wf_receive_ts, "WorldFrame.npy"), self.world_frame)
             return StatusCode.SUCCESS, None, None
 
         elif data_string.startswith("Start") and self.wf_receive_ts is not None:
             formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
-            self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
+            self.data_dir = os.path.join(self.data_root, self.wf_receive_ts, formatted_time)
             os.makedirs(self.data_dir, exist_ok=True)
             return StatusCode.SUCCESS, None, None
 
@@ -100,7 +132,7 @@ class QuestTeleopModule:
 
             if self.data_dir is None and data_string[0] == "Y":
                 formatted_time = now.strftime("%Y-%m-%d-%H-%M-%S")
-                self.data_dir = f"data/{self.wf_receive_ts}/{formatted_time}"
+                self.data_dir = os.path.join(self.data_root, self.wf_receive_ts, formatted_time)
                 os.makedirs(self.data_dir, exist_ok=True)
 
             return StatusCode.SUCCESS, (rel_wrist_pos, rel_wrist_rot), (rel_head_pos, rel_head_rot)
@@ -124,6 +156,8 @@ class QuestTeleopModule:
             msg += f",{hand_str}"
 
         self.ik_result_s.sendto(msg.encode(), self.ik_result_dest)
+        if self.stats_out is not None:
+            self.stats_out.mark(dest=f"{self.ik_result_dest[0]}:{self.ik_result_dest[1]}")
         self.last_arm_q, self.last_hand_q = right_arm_q, right_hand_q
 
     def close(self):

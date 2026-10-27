@@ -5,12 +5,13 @@ LOCAL_HOST:
 
 CTRL_HOST:
   NAME: "droid"
-  IP_ETH: "host.docker.internal"
+  IP_ETH: "host.docker.internal" # where the xArm controller (deoxys) runs: host.docker.internal = a container on this laptop; the launcher overrides it with --arm_host
   ARM_PUB_PORT: 5556
   ARM_SUB_PORT: 5555
   GRIPPER_PUB_PORT: 5558
   GRIPPER_SUB_PORT: 5557
   HAND_PORT: 6669
+  CONTROL_COMPUTER_IP: 192.168.42.10 # control computer (Jetson): runs the LEAP hand, and the xArm controller when it runs there
 
 ROBOT:
   IP: 192.168.42.227

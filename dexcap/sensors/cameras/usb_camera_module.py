@@ -3,14 +3,23 @@ import cv2
 import numpy as np
 import os
 import random
+import threading
 from collections import defaultdict
 import time
 
 
-def gather_usb_cameras(max_tested=10):
-    """Scans system for available USB cameras using OpenCV indices."""
+def truncated_jpeg_frame(img):
+    """A frame that lost data on the way is decoded up to the break and its last block repeated to the end,
+    so its bottom-right corner is exactly flat; real camera images never are. (Frames missing their end
+    marker are caught before decoding.)"""
+    corner = img[-16:, -128:]
+    return bool((np.ptp(corner.reshape(-1, corner.shape[-1]), axis=0) <= 1).all())
+
+
+def gather_usb_cameras(max_tested=10, device_ids=None):
+    """Scans system for available USB cameras using OpenCV indices (only device_ids, if given)."""
     all_usb_cameras = []
-    for device_id in range(max_tested):
+    for device_id in (device_ids if device_ids is not None else range(max_tested)):
         cap = cv2.VideoCapture(device_id, cv2.CAP_V4L2)
         if cap.isOpened():
             ret, _ = cap.read()
@@ -89,12 +98,25 @@ class USBCamera:
         width, height = init_params.get("resolution", (640, 480))
         fps = init_params.get("fps", 30)
 
+        # Ask for compressed MJPEG before setting the size: uncompressed video from webcams like the C920 is
+        # too much for USB passed through to WSL (usbipd) and arrives striped or drops the device. Cameras
+        # without MJPEG (e.g. the ZED) keep their own format.
+        self._cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
         self._cam.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._cam.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self._cam.set(cv2.CAP_PROP_FPS, fps)
 
         if not self._cam.isOpened():
             raise RuntimeError(f"USB Camera {self.device_id} Failed To Open")
+
+        # With MJPEG, take the compressed frames and decode them here: over usbipd some frames arrive
+        # incomplete (~9% for a C920), and OpenCV would decode them into half-grey images ("Corrupt JPEG
+        # data"). Incomplete frames are dropped instead.
+        self.raw_mjpeg = int(self._cam.get(cv2.CAP_PROP_FOURCC)) == cv2.VideoWriter_fourcc(*"MJPG")
+        if self.raw_mjpeg:
+            self._cam.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        self.incomplete_frames = 0
 
         self.latency = int(2.5 * (1e3 / fps))
 
@@ -123,6 +145,15 @@ class USBCamera:
 
         if not ret or frame is None:
             return None, None
+        if getattr(self, "raw_mjpeg", False):
+            data = frame.reshape(-1)
+            if not (data[:2].tobytes() == b"\xff\xd8" and data.tobytes().rfind(b"\xff\xd9") > 2):
+                self.incomplete_frames += 1
+                return None, None
+            frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if frame is None or truncated_jpeg_frame(frame):
+                self.incomplete_frames += 1
+                return None, None
 
         # Benchmark Latency #
         received_time = time.time() * 1000.0
@@ -160,8 +191,8 @@ class USBCamera:
 
 
 class MultiCameraWrapper:
-    def __init__(self, camera_kwargs={}):
-        usb_cameras = gather_usb_cameras()
+    def __init__(self, camera_kwargs={}, device_ids=None):
+        usb_cameras = gather_usb_cameras(device_ids=device_ids)
         self.camera_dict = {cam.serial_number: cam for cam in usb_cameras}
 
         # Set Correct Parameters #
@@ -179,7 +210,97 @@ class MultiCameraWrapper:
         for cam in self.camera_dict.values():
             cam.set_trajectory_mode()
 
+    def start_background(self):
+        """Read every camera on its own thread and keep its latest frame.
+
+        Cameras are otherwise read one after another, so a slow one (e.g. a GelSight Mini, whose
+        3280x2464 MJPEG frames take ~50 ms to decode) holds up the whole teleop loop. In the background
+        they decode in parallel and read_cameras() returns the latest frames without waiting.
+        """
+        self._latest = {}
+        self._lock = threading.Lock()
+        self._running = True
+        self._recording = None  # (folder, {cam_id: name}) while full-resolution videos are being written
+        self._writers_closed = {cam_id: threading.Event() for cam_id in self.camera_dict}
+        for event in self._writers_closed.values():
+            event.set()
+
+        def loop(cam_id, cam):
+            writer = None  # this camera's VideoWriter while a recording is on
+            while self._running and cam.is_running():
+                data_dict, timestamp_dict = cam.read_camera()
+                if data_dict:
+                    with self._lock:
+                        self._latest[cam_id] = (data_dict, timestamp_dict)
+                writer = self._record_frame(cam_id, cam, data_dict, writer)
+            self._record_frame(cam_id, cam, None, writer, closing=True)
+
+        self._threads = [threading.Thread(target=loop, args=(cam_id, cam), daemon=True)
+                         for cam_id, cam in self.camera_dict.items()]
+        for thread in self._threads:
+            thread.start()
+
+    # Full-resolution videos, like DROID's per-trajectory recordings: one MP4 per camera (a stereo camera's
+    # whole side-by-side frame) plus a CSV of each frame's capture time, next to the trajectory file.
+    # Written by each camera's background thread, so encoding never slows the teleop loop.
+    VIDEO_SCALE = {"tactile": 0.5}  # name prefix -> scale; tactile sensors (e.g. 3280x2464 GelSight) at half size
+
+    def start_recording(self, folder, names):
+        """names: {cam_id: file name}, e.g. {"2": "wrist", "0": "tactile_left"}. Needs start_background()."""
+        self._recording = (folder, dict(names))
+
+    def stop_recording(self, timeout=3.0):
+        """Stop the videos and wait until every file is closed (so they are complete)."""
+        self._recording = None
+        for event in getattr(self, "_writers_closed", {}).values():
+            event.wait(timeout)
+
+    def _record_frame(self, cam_id, cam, data_dict, writer, closing=False):
+        recording = None if closing else self._recording
+        name = recording[1].get(cam_id) if recording else None
+        if writer is not None and (name is None or writer["folder"] != recording[0]):
+            writer["video"].release()
+            writer["times"].close()
+            self._writers_closed[cam_id].set()
+            writer = None
+        if name is None or not data_dict:
+            return writer
+        images = data_dict.get("image", {})
+        frame = images.get(cam.serial_number)
+        if frame is None and cam.serial_number + "_left" in images:  # stereo: keep the whole pair
+            frame = np.hstack([images[cam.serial_number + "_left"], images[cam.serial_number + "_right"]])
+        if frame is None:
+            return writer
+        scale = next((s for prefix, s in self.VIDEO_SCALE.items() if name.startswith(prefix)), 1.0)
+        if scale != 1.0:
+            frame = cv2.resize(frame, (int(frame.shape[1] * scale) // 2 * 2, int(frame.shape[0] * scale) // 2 * 2))
+        if writer is None:
+            fps = cam._cam.get(cv2.CAP_PROP_FPS) or 30
+            path = os.path.join(recording[0], f"{name}.mp4")
+            video = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (frame.shape[1], frame.shape[0]))
+            times = open(os.path.join(recording[0], f"{name}_timestamps.csv"), "w")
+            times.write("frame,capture_time_ns\n")
+            writer = {"folder": recording[0], "video": video, "times": times, "count": 0, "size": frame.shape[1::-1]}
+            self._writers_closed[cam_id].clear()
+        if frame.shape[1::-1] != writer["size"]:
+            frame = cv2.resize(frame, writer["size"])
+        writer["video"].write(frame[..., :3])
+        writer["times"].write(f"{writer['count']},{time.time_ns()}\n")
+        writer["count"] += 1
+        return writer
+
     def read_cameras(self):
+        if getattr(self, "_running", False):
+            full_obs_dict = defaultdict(dict)
+            full_timestamp_dict = {}
+            with self._lock:
+                latest = list(self._latest.values())
+            for data_dict, timestamp_dict in latest:
+                for key in data_dict:
+                    full_obs_dict[key].update(data_dict[key])
+                full_timestamp_dict.update(timestamp_dict)
+            return full_obs_dict, full_timestamp_dict
+
         full_obs_dict = defaultdict(dict)
         full_timestamp_dict = {}
 
@@ -201,6 +322,10 @@ class MultiCameraWrapper:
         return full_obs_dict, full_timestamp_dict
 
     def disable_cameras(self):
+        self.stop_recording()
+        self._running = False
+        for thread in getattr(self, "_threads", []):
+            thread.join(timeout=1)
         for camera in self.camera_dict.values():
             camera.disable_camera()
 

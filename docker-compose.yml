@@ -37,5 +37,6 @@ services:
       - "12346:12346/udp" # Pose command port (from quest)
       - "12345:12345/udp" # IK result port (to quest)
       - "65432:65432/udp" # Hand finger-tip pose info pot (to quest)
+      - "8080:8080" # Teleop status page (http://localhost:8080)
 
 #export DISPLAY=172.16.0.2:0

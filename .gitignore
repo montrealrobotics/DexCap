@@ -10,3 +10,5 @@ data/
 build/
 dist/
 logs/
+launcher/launcher_settings.json
+launcher/launcher_config.json
