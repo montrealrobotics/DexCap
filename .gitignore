@@ -12,3 +12,5 @@ dist/
 logs/
 launcher/launcher_settings.json
 launcher/launcher_config.json
+launcher/hand_tuning.json
+launcher/hand_tuning.tmp

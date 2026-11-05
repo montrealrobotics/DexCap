@@ -1,3 +1,4 @@
+import json
 import logging
 import socket
 import threading
@@ -24,7 +25,8 @@ from deoxys.robot_interfaces.xarm_interface import XArmInterface
 from deoxys.robot_interfaces.utils.utils import ActionType
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils import YamlConfig
-from dexcap.utils.utils import check_connection, get_logger, StatusCode, extract_img_observation, resize_with_pad
+from dexcap.utils.utils import check_connection, get_logger, StatusCode, extract_img_observation, resize_with_pad, \
+    convert_to_hardware
 from dexcap.utils.status import StatusBoard, BoardLogHandler, RateLimitedWarning, start_status_server
 
 logger = get_logger("teleop_server")
@@ -37,16 +39,6 @@ warn_every = RateLimitedWarning(logger, period=5.0)
 left_camera_id: str = "0"
 right_camera_id: str = "2"
 wrist_camera_id: str = "4"
-
-def convert_to_hardware(joint_angles):
-    real_right_robot_hand_q = np.zeros(16)
-    real_right_robot_hand_q[0:16] = joint_angles[0:16]
-    real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
-    real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
-    real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
-    real_right_robot_hand_q[:16] += np.pi
-    return real_right_robot_hand_q.tolist()
-
 
 def init_robot(robot_interface, arm_start_joints, position_controller_cfg):
 
@@ -132,6 +124,25 @@ def str2bool(value):
     raise ArgumentTypeError(f"expected True or False, got {value!r}")
 
 
+def watch_hand_tuning(path, rokoko, board, period=0.5):
+    """Apply the launcher's finger length (a JSON file it rewrites) to the glove targets while running."""
+    last_mtime = None
+    while True:
+        try:
+            mtime = os.path.getmtime(path)
+            if mtime != last_mtime:
+                last_mtime = mtime
+                with open(path) as f:
+                    factor = float(json.load(f)["finger_length"])
+                if 0.5 <= factor <= 3.0 and factor != rokoko.finger_length:
+                    rokoko.set_finger_length(factor)
+                    logger.info(f"Finger length set to {factor * 100:.0f}%")
+                board.set_info(finger_length=f"{rokoko.finger_length * 100:.0f}%")
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # missing or half-written file: keep the current length and try again
+        time.sleep(period)
+
+
 def monitor_robot(board, robot_interface=None, redis_client=None, period=0.2):
     """Background liveness checks for the arm (deoxys state stream) and the LEAP hand (redis)."""
     arm_stats = board.stream("arm_state", "Arm state (deoxys)") if robot_interface is not None else None
@@ -194,6 +205,12 @@ if __name__ == "__main__":
     # Local ports fed by scripts/udp_relay.py, which keeps the Docker-published ports open across restarts
     parser.add_argument("--pose_port", type=int, default=None, help="Overrides TELEOP.POSE_CMD_PORT (Quest poses in)")
     parser.add_argument("--rokoko_port", type=int, default=None, help="Overrides TELEOP.ROKOKO_PORT (Rokoko stream in)")
+    parser.add_argument("--hand_tuning", type=str, default=None,
+                        help="JSON file with {\"finger_length\": factor}, reread while running (written by the launcher)")
+    parser.add_argument("--hand_mapping", choices=["fingertips", "geort"], default="fingertips",
+                        help="LEAP hand from the glove: fingertip IK, or a trained GeoRT model (--geort_model)")
+    parser.add_argument("--geort_model", type=str, default=None,
+                        help="GeoRT model folder, e.g. /workspace/GeoRT/checkpoint/leap_right_<date>_<name>")
     args = parser.parse_args()
 
     board = StatusBoard()
@@ -303,6 +320,15 @@ if __name__ == "__main__":
     if hand_ctrl:
         rokoko = RokokoModule(ip_config)
         rokoko.start_background(board.stream("rokoko", "Rokoko gloves"))
+        if args.hand_tuning:
+            threading.Thread(target=watch_hand_tuning, args=(args.hand_tuning, rokoko, board), daemon=True).start()
+
+    geort = None
+    if hand_ctrl and gripper == "leap" and args.hand_mapping == "geort":
+        from dexcap.utils.geort_mapping import GeoRTHand
+        geort = GeoRTHand(args.geort_model)
+        logger.info(f"Hand mapping: GeoRT model {os.path.basename(args.geort_model.rstrip('/'))} ({geort.device})")
+    board.set_info(hand_mapping=f"GeoRT {os.path.basename(args.geort_model.rstrip('/'))}" if geort else "fingertip targets")
 
     if gripper == "leap":
         solver = LeapHandIKSolver(arm_config)
@@ -364,7 +390,10 @@ if __name__ == "__main__":
                     right_wrist_orn = Rotation.from_quat(right_wrist_rot)
                     head_pos = head_pose[0]
                     head_orn = Rotation.from_quat(head_pose[1])
-                    if hand_ctrl:
+                    if geort is not None:
+                        right_arm_q, right_hand_q = solver.solve_system_world(
+                            right_wrist_pos, right_wrist_orn, hand_q=geort.forward(rokoko.right_points))
+                    elif hand_ctrl:
                         hand_tip_pose = right_wrist_orn.apply(right_positions) + right_wrist_pos
                         hand_tip_pose = hand_tip_pose[[1,2,3,0]]
                         right_arm_q, right_hand_q = solver.solve_system_world(right_wrist_pos, right_wrist_orn, hand_tip_pose)

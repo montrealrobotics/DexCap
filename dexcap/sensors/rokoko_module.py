@@ -30,6 +30,9 @@ class RokokoModule:
         self.tip_vis_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.tip_vis_dest = (config.TELEOP.VR_HOST, config.TELEOP.HAND_INFO_PORT)
         self.visualization = visualization
+        self.scale = list(RokokoModule.scale)
+        self.finger_length = 1.0
+        self.right_points = None
         self.cnt = 0
         self.hands_present = (False, False)
         # Last time each hand's raw data changed; a powered-off glove can stay in the
@@ -54,34 +57,32 @@ class RokokoModule:
             return [self.round_floats(x) for x in o]
         return o
 
+    @staticmethod
+    def hand_points(body, side):
+        """The 21 points of one hand (wrist first, then thumb..little from base to tip) in the wrist's frame,
+        as Rokoko sends them, or None if that glove isn't in the packet. side: "left" or "right"."""
+        if side + "Hand" not in body:
+            return None
+        raw_wrist_orn = body[side + "Hand"]["rotation"]
+        wrist_orn = Rotation.from_quat(np.array([raw_wrist_orn["x"], raw_wrist_orn["y"], raw_wrist_orn["z"], raw_wrist_orn["w"]]))
+        raw_wrist_position = body[side + "Hand"]["position"]
+        wrist_position = np.array([raw_wrist_position["x"], raw_wrist_position["y"], raw_wrist_position["z"]])
+        points = []
+        for link_name in RokokoModule.hand_link_names:
+            raw_pos = body[side + link_name]["position"]
+            pos = np.array([raw_pos["x"], raw_pos["y"], raw_pos["z"]])
+            points.append(wrist_orn.inv().apply(pos - wrist_position))
+        return np.array(points)
+
     def Unpack(self, data):
         info = json.loads(data)
-        left_link_positions = []
-        if "leftHand" in info["scene"]["actors"][0]["body"].keys():
-            raw_wrist_orn = info["scene"]["actors"][0]["body"]["leftHand"]["rotation"]
-            wrist_orn = Rotation.from_quat(np.array([raw_wrist_orn["x"], raw_wrist_orn["y"], raw_wrist_orn["z"], raw_wrist_orn["w"]]))
-            raw_wrist_position = info["scene"]["actors"][0]["body"]["leftHand"]["position"]
-            wrist_position = np.array([raw_wrist_position["x"], raw_wrist_position["y"], raw_wrist_position["z"]])
-            for link_name in RokokoModule.hand_link_names:
-                link_name = "left" + link_name
-                raw_pos = info["scene"]["actors"][0]["body"][link_name]["position"]
-                pos = np.array([raw_pos["x"], raw_pos["y"], raw_pos["z"]])
-                rel_pos = wrist_orn.inv().apply(pos - wrist_position)
-                left_link_positions.append(rel_pos)
-            left_link_positions = -np.array(left_link_positions)
-        right_link_positions = []
-        if "rightHand" in info["scene"]["actors"][0]["body"].keys():
-            raw_wrist_orn = info["scene"]["actors"][0]["body"]["rightHand"]["rotation"]
-            wrist_orn = Rotation.from_quat(np.array([raw_wrist_orn["x"], raw_wrist_orn["y"], raw_wrist_orn["z"], raw_wrist_orn["w"]]))
-            raw_wrist_position = info["scene"]["actors"][0]["body"]["rightHand"]["position"]
-            wrist_position = np.array([raw_wrist_position["x"], raw_wrist_position["y"], raw_wrist_position["z"]])
-            for link_name in RokokoModule.hand_link_names:
-                link_name = "right" + link_name
-                raw_pos = info["scene"]["actors"][0]["body"][link_name]["position"]
-                pos = np.array([raw_pos["x"], raw_pos["y"], raw_pos["z"]])
-                rel_pos = wrist_orn.inv().apply(pos - wrist_position)
-                right_link_positions.append(rel_pos)
-            right_link_positions = -np.array(right_link_positions)
+        body = info["scene"]["actors"][0]["body"]
+        left_points = RokokoModule.hand_points(body, "left")
+        right_points = RokokoModule.hand_points(body, "right")
+        # Unscaled right-hand points, for the GeoRT hand mapping (see dexcap/utils/geort_mapping.py)
+        self.right_points = right_points
+        left_link_positions = [] if left_points is None else -left_points
+        right_link_positions = [] if right_points is None else -right_points
         # A glove that is not linked to the actor is missing from the packet; keep the
         # array shapes fixed so downstream indexing works, and report it via hands_present.
         self.hands_present = (len(left_link_positions) == 21, len(right_link_positions) == 21)
@@ -95,12 +96,21 @@ class RokokoModule:
             left_link_positions = np.zeros((21, 3))
         if not self.hands_present[1]:
             right_link_positions = np.zeros((21, 3))
-        left_link_positions, right_link_positions = self.adjust_bone_length(left_link_positions, right_link_positions, RokokoModule.scale)
+        left_link_positions, right_link_positions = self.adjust_bone_length(left_link_positions, right_link_positions, self.scale)
         tip_id = RokokoModule.tip_id[self.cnt]
         # self.cnt += 1
         # if self.cnt == 4:
         #     self.cnt = 0
         return left_link_positions[tip_id], right_link_positions[tip_id]
+
+    def set_finger_length(self, factor):
+        """Lengthen the finger segments by factor on top of RokokoModule.scale (1.0 = unchanged).
+
+        The wrist-to-knuckle bones (every 4th entry) keep their length, so the knuckles stay where
+        they are and only the fingertip targets move further from (or closer to) the palm.
+        """
+        self.finger_length = factor
+        self.scale = [s if i % 4 == 0 else s * factor for i, s in enumerate(RokokoModule.scale)]
 
     def adjust_bone_length(self, left_positions, right_positions, factors = [1.0]*20):
         factors = np.array(factors) * 1.3

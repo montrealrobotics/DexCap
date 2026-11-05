@@ -33,6 +33,7 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # ...\src\DexCap (or DexCap_test)
 SRC_DIR = REPO_DIR.parent  # mounted at /workspace in the dexcap container
+GEORT_DIR = SRC_DIR / "GeoRT"  # GeoRT hand mapping (https://github.com/facebookresearch/GeoRT), /workspace/GeoRT
 
 CONFIG = {
     "port": 8090,
@@ -481,7 +482,17 @@ class ContainerStep(Step):
 SETTINGS_FILE = Path(__file__).with_name("launcher_settings.json")
 SETTINGS = {"arm": "xarm", "xarm_on": "laptop", "hand": "leap", "robot": "arm_hand",
             "device_roles": {},  # USB port (usbipd busid) -> role, e.g. {"1-20": "left", "1-5": "tactile_left"}
-            "data_dir": str(REPO_DIR / "data")}
+            "data_dir": str(REPO_DIR / "data"),
+            # How far the fingertip targets reach from the palm, relative to the glove's own finger length
+            # setting (1.0 = the original targets, which left the LEAP fingers curled with a flat hand)
+            "finger_length": 1.3,
+            # How the LEAP hand follows the glove: "fingertips" (fingertip targets + IK) or "geort" (a trained
+            # GeoRT model, chosen in the Hand mapping tab; geort_model is its folder name in GeoRT/checkpoint)
+            "hand_mapping": "fingertips", "geort_model": ""}
+HAND_MAPPINGS = {"fingertips": "Fingertip targets", "geort": "GeoRT model"}
+# The running teleop rereads this file, so the finger length changes live (see watch_hand_tuning)
+HAND_TUNING_FILE = Path(__file__).with_name("hand_tuning.json")
+FINGER_LENGTH_RANGE = (0.8, 2.0)
 XARM_LOCATIONS = {"laptop": "This laptop", "control": "Control computer"}
 CAMERA_ROLES = {"wrist": "Wrist", "left": "Left", "right": "Right"}
 TACTILE_ROLES = {"tactile_left": "Left", "tactile_right": "Right"}
@@ -521,6 +532,15 @@ def check_settings():
         SETTINGS["hand"] = "leap"
     if SETTINGS["robot"] not in ROBOT_MODES:
         SETTINGS["robot"] = "arm_hand"
+    try:
+        SETTINGS["finger_length"] = round(min(max(float(SETTINGS["finger_length"]), FINGER_LENGTH_RANGE[0]),
+                                              FINGER_LENGTH_RANGE[1]), 2)
+    except (TypeError, ValueError):
+        SETTINGS["finger_length"] = 1.3
+    if SETTINGS["hand_mapping"] not in HAND_MAPPINGS:
+        SETTINGS["hand_mapping"] = "fingertips"
+    if not isinstance(SETTINGS["geort_model"], str):
+        SETTINGS["geort_model"] = ""
     if SETTINGS["robot"] == "hand_only" and SETTINGS["hand"] != "leap":
         # The xArm gripper is driven through the arm's controller, so it cannot run without the arm
         SETTINGS["robot"] = "arm_hand"
@@ -533,11 +553,22 @@ def load_settings():
     except (OSError, ValueError):
         pass
     check_settings()
+    write_hand_tuning()  # the teleop is started with this file, so it must exist
 
 
 def save_settings():
     try:
         SETTINGS_FILE.write_text(json.dumps(SETTINGS))
+    except OSError:
+        pass
+    write_hand_tuning()
+
+
+def write_hand_tuning():
+    try:
+        tmp = HAND_TUNING_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"finger_length": SETTINGS["finger_length"]}))
+        os.replace(tmp, HAND_TUNING_FILE)  # the teleop never sees a half-written file
     except OSError:
         pass
 
@@ -561,7 +592,19 @@ def teleop_args():
             f"--pose_port {relay[12346]} --rokoko_port {relay[14043]} "
             + (f"--vr_host {vr_host} " if vr_host else "") + arm_host + cameras +
             f"--robot_arm {SETTINGS['arm']} --gripper_type {SETTINGS['hand']} "
+            f"--hand_tuning {shlex.quote(container_path(HAND_TUNING_FILE))} " + geort_args() +
             f"--data_dir {shlex.quote(container_path(SETTINGS['data_dir']))}")
+
+
+def geort_args():
+    """Teleop flags for the GeoRT hand mapping, when it is chosen and its model is there."""
+    if SETTINGS["hand_mapping"] != "geort" or SETTINGS["hand"] != "leap" or not geort_model_ok():
+        return ""
+    return f"--hand_mapping geort --geort_model /workspace/GeoRT/checkpoint/{SETTINGS['geort_model']} "
+
+
+def geort_model_ok():
+    return bool(SETTINGS["geort_model"]) and (GEORT_DIR / "checkpoint" / SETTINGS["geort_model"] / "last.pth").exists()
 
 
 def browse_folder(initial):
@@ -630,6 +673,21 @@ def headset_serial():
 HEADSET_VIEW = {"proc": None}
 
 
+def headset_wifi_serial(serial):
+    """The headset's adb serial over WiFi, turning wireless adb on first when serial is the USB cable (the
+    headset turns it off at every reboot), so the cable can be unplugged afterwards. None if it doesn't connect."""
+    vr_host = read_vr_host()
+    if ":" in serial or not vr_host:
+        return serial if ":" in serial else None
+    adb, target = CONFIG["adb"], f"{vr_host}:5555"
+    _, out = run([adb, "connect", target], timeout=10)
+    if "connected to" not in out:
+        run([adb, "-s", serial, "tcpip", "5555"], timeout=15)
+        time.sleep(2)  # adb on the headset restarts in WiFi mode
+        _, out = run([adb, "connect", target], timeout=10)
+    return target if "connected to" in out else None
+
+
 
 def show_headset_view():
     """Open a window mirroring the headset (view only: no input is sent to the headset)."""
@@ -641,9 +699,10 @@ def show_headset_view():
     serial, problem = headset_serial()
     if not serial:
         return problem
+    wifi = headset_wifi_serial(serial)
     # scrcpy brings its own adb; use Developer Hub's so the two don't keep restarting each other's server
     env = dict(os.environ, ADB=CONFIG["adb"])
-    proc = subprocess.Popen([CONFIG["scrcpy"], "-s", serial, "--no-audio", "--no-control", "--max-size=1280",
+    proc = subprocess.Popen([CONFIG["scrcpy"], "-s", wifi or serial, "--no-audio", "--no-control", "--max-size=1280",
                              "--max-fps=30", "--window-title=Headset view"],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             text=True, encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW)
@@ -656,7 +715,10 @@ def show_headset_view():
         say(f"headset view closed (exit code {proc.wait()})")
 
     threading.Thread(target=report, daemon=True).start()
-    return "headset view opening (it takes a few seconds)"
+    if wifi:
+        return "headset view opening over WiFi (it takes a few seconds); the USB cable can be unplugged"
+    return ("headset view opening over the USB cable (it takes a few seconds); wireless adb didn't connect, "
+            "so unplugging the cable closes it")
 
 
 def headset_keep_awake(on):
@@ -984,6 +1046,204 @@ class TeleopStep(ContainerStep):
             since = "yet" if PORTS.quest_age is None else f"for {PORTS.quest_age:.0f} s"
             return ("ok" if stage == "running" else "stale"), f"{stage}; no headset data {since} (port OK)"
         return ("ok" if stage == "running" else "stale"), stage
+
+
+class HandRecordStep(ContainerStep):
+    """Records right-glove hand shapes for a GeoRT hand mapping (scripts/record_hand_data.py)."""
+
+    def __init__(self):
+        super().__init__("hand_record", "Hand recording", "dexcap container, this laptop",
+                         CONFIG["teleop_container"], "record_hand_data[.]py")
+        self.name = None
+
+    def begin(self, name):
+        """Rokoko streaming and the UDP relay must be up; the recorder listens where the teleop would."""
+        self.name = name
+        self.say(f"recording {name}")
+        if not ensure_teleop_container() or not STEPS["teleop"]._ensure_relay(self.container):
+            self.say("the dexcap container or the UDP relay did not start")
+            return False
+        if not STEPS["rokoko"].start():
+            self.say("Rokoko streaming did not start, see Rokoko Studio")
+            return False
+        return self.start()
+
+    def _start(self):
+        return self._launch(f"source /home/.venv/bin/activate && cd /workspace/{REPO_DIR.name} && "
+                            f"PYTHONPATH=/workspace/{REPO_DIR.name}:$PYTHONPATH exec python -u "
+                            f"scripts/record_hand_data.py --name {shlex.quote(self.name)} "
+                            f"--port {CONFIG['udp_relay'][14043]}")
+
+    def progress(self):
+        lines = self.output_lines()
+        info = {"running": self.up, "name": self.name, "frames": 0, "seconds": 0, "glove": "", "result": ""}
+        for line in lines:
+            m = re.match(r"PROGRESS frames=(\d+) seconds=(\d+) glove=(.*)", line)
+            if m:
+                info.update(frames=int(m[1]), seconds=int(m[2]), glove=m[3])
+            elif line.startswith(("Saved ", "Nothing recorded", "Warning:", "The glove port")) or "Error" in line:
+                info["result"] = line
+            m = re.match(r"Recording '(.+?)'", line)
+            if m and not info["name"]:
+                info["name"] = m[1]
+        return info
+
+
+class HandTrainStep(ContainerStep):
+    """Trains a GeoRT hand mapping on a recording (scripts/train_hand_mapping.py, about 10 minutes on the GPU)."""
+
+    def __init__(self):
+        super().__init__("hand_train", "Hand mapping training", "dexcap container, this laptop",
+                         CONFIG["teleop_container"], "train_hand_mapping[.]py|GeoRTTrainer")
+        self.name = None
+
+    def begin(self, name):
+        self.name = name
+        self.say(f"training on {name}")
+        if not ensure_teleop_container():
+            self.say("the dexcap container did not start")
+            return False
+        return self.start()
+
+    def _start(self):
+        return self._launch(f"cd /workspace/{REPO_DIR.name} && exec python3 -u scripts/train_hand_mapping.py "
+                            f"--name {shlex.quote(self.name)}")
+
+    def progress(self):
+        info = {"running": self.up, "name": self.name, "stage": "", "epoch": 0, "epochs": 200, "result": ""}
+        for line in self.output_lines():
+            m = re.search(r"Neural FK Training Epoch: (\d+)", line)
+            if m:
+                info.update(stage="Learning the robot hand", epoch=int(m[1]) + 1)
+            m = re.match(r"Epoch (\d+) \|", line)
+            if m:
+                info.update(stage="Learning the glove-to-robot mapping", epoch=int(m[1]) + 1)
+            m = re.search(r"-human_data (\S+)", line)
+            if m and not info["name"]:
+                info["name"] = m[1]
+            if line.startswith("MODEL "):
+                info["result"] = "done"
+            elif line.startswith(("Training did not", "No recording", "Stopped:")) or "Error" in line:
+                info["result"] = line
+        return info
+
+
+class HandTestStep(ContainerStep):
+    """Drives the LEAP hand straight from the glove with the chosen GeoRT model, or the fingertip targets when no
+    model is chosen (scripts/test_hand_mapping.py),
+    without the Quest or the arm. Starts the LEAP hand for the test and turns it off again afterwards."""
+
+    def __init__(self):
+        super().__init__("hand_test", "Hand mapping test", "dexcap container, this laptop",
+                         CONFIG["teleop_container"], "test_hand_mapping[.]py")
+        self.model = None
+        self.stage = ""
+
+    def begin(self, model):
+        self.model = model
+        self.say(f"testing {model or 'fingertip targets (no model)'}")
+        try:
+            self.stage = "Starting the dexcap container…"
+            if not ensure_teleop_container() or not STEPS["teleop"]._ensure_relay(self.container):
+                self.say("the dexcap container or the UDP relay did not start")
+                return False
+            self.stage = "Starting Rokoko streaming…"
+            if not STEPS["rokoko"].start():
+                self.say("Rokoko streaming did not start, see Rokoko Studio")
+                return False
+            self.stage = "Starting the LEAP hand on the control computer…"
+            if not STEPS["leap"].start() or not wait_for(lambda: STEPS["leap"].health()[0] == "ok", 90, "LEAP hand"):
+                self.say("the LEAP hand did not come up: is the control computer on? (its log is on the Data collection tab)")
+                return False
+            self.stage = "Loading the model…"
+            return self.start()
+        finally:
+            self.stage = ""
+
+    def _start(self):
+        return self._launch(f"source /home/.venv/bin/activate && cd /workspace/{REPO_DIR.name} && "
+                            f"PYTHONPATH=/workspace/{REPO_DIR.name}:$PYTHONPATH exec python -u "
+                            "scripts/test_hand_mapping.py " +
+                            (f"--model /workspace/GeoRT/checkpoint/{shlex.quote(self.model)} " if self.model else
+                             f"--hand_tuning {shlex.quote(container_path(HAND_TUNING_FILE))} ") +
+                            f"--port {CONFIG['udp_relay'][14043]} --redis_host {jetson_ip()} "
+                            f"--redis_port {CONFIG['leap_redis_port']}")
+
+    def switch(self, model):
+        """Try another mapping without turning the LEAP hand off."""
+        self.model = model
+        self.say(f"switching to {model or 'fingertip targets (no model)'}")
+        self.restart()
+
+    def end(self):
+        self.stop()
+        STEPS["leap"].stop()  # also sets the hand command back to neutral
+
+    def progress(self):
+        info = {"running": self.up, "stage": self.stage, "sent": 0, "glove": "", "result": ""}
+        for line in self.output_lines():
+            m = re.match(r"PROGRESS sent=(\d+) glove=(.*)", line)
+            if m:
+                info.update(sent=int(m[1]), glove=m[2])
+            elif line.startswith("The glove port") or "Error" in line:
+                info["result"] = line
+        return info
+
+
+MAPPING = {"record": HandRecordStep(), "train": HandTrainStep(), "test": HandTestStep()}
+
+
+def glove_users():
+    """Programs listening on the glove port (only one can at a time), as names for the page."""
+    users = []
+    if STEPS["teleop"].alive() or BUSY["what"] == "starting":
+        users.append("the teleop")
+    if MAPPING["test"].alive() or MAPPING["test"].stage:
+        users.append("the hand test")
+    if MAPPING["record"].alive():
+        users.append("the hand recording")
+    return users
+NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
+
+
+def hand_recordings():
+    """Recordings in GeoRT/data made by scripts/record_hand_data.py (each has a .json next to it), newest first."""
+    recs = []
+    for meta_file in (GEORT_DIR / "data").glob("*.json"):
+        try:
+            meta = json.loads(meta_file.read_text())
+        except (OSError, ValueError):
+            continue
+        if (GEORT_DIR / "data" / f"{meta_file.stem}.npy").exists():
+            recs.append({"name": meta_file.stem, "frames": meta.get("frames", 0), "seconds": meta.get("seconds", 0),
+                         "created": meta.get("created", ""), "uncertain": abs(meta.get("curl_score_mm", 99)) < 5,
+                         "t": meta_file.stat().st_mtime})
+    return sorted(recs, key=lambda r: -r["t"])
+
+
+# Which robot model a GeoRT checkpoint was trained for (the folder name up to the date), as shown in the list
+MODEL_KINDS = {"leap_right": "LEAP", "leap_right_tight": "LEAP, tight limits",
+               "leap_right_v2": "LEAP, fixed fingertips", "allegro_right": "Allegro, converted to LEAP"}
+
+
+def hand_models():
+    """Trained GeoRT models in GeoRT/checkpoint that can drive the LEAP hand, newest first."""
+    models = []
+    for d in [d for p in MODEL_KINDS for d in (GEORT_DIR / "checkpoint").glob(f"{p}_20*")]:
+        if not (d / "last.pth").exists():
+            continue
+        try:
+            meta = json.loads((d / "dexcap_meta.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        t = (d / "last.pth").stat().st_mtime
+        name = meta.get("recording", d.name.split("_", 4)[-1])
+        if "(" not in name:  # test models already say what they are, e.g. "kirsty2 (leap_tight)"
+            name += f' ({MODEL_KINDS.get(d.name.split("_20")[0], "")})'
+        models.append({"id": d.name, "name": name,
+                       "epochs": len(list(d.glob("epoch_*.pth"))), "from_glove": bool(meta),
+                       "trained": time.strftime("%d %b %H:%M", time.localtime(t)), "t": t})
+    return sorted(models, key=lambda m: -m["t"])
 
 
 class PortCheck:
@@ -1346,6 +1606,8 @@ def check_once():
     docker_up = checks["docker"][1]
     STEPS["xarm"].refresh(tcp_open(jetson_ip(), 22) if STEPS["xarm"].remote else docker_up)
     STEPS["teleop"].refresh(docker_up)
+    for step in MAPPING.values():
+        step.refresh(docker_up)
     refresh_devices()
     # The control computer is only polled while it is in use or something is still running there
     if "leap" in steps or STEPS["leap"].up:
@@ -1370,6 +1632,9 @@ def wait_for(cond, timeout, what):
 
 def start_all():
     steps = plan()
+    if MAPPING["record"].alive() or MAPPING["test"].alive():
+        say("stopped: a hand recording or test is running (Hand mapping tab); stop it first, it uses the glove port")
+        return
     say("starting: " + ", ".join(STEPS[k].label for k in steps))
     if not docker_ok():
         progress("Starting Docker Desktop (this can take a minute)…")
@@ -1470,6 +1735,14 @@ def state():
             what = ("Tactile sensor " + TACTILE_ROLES[role].lower()) if role in TACTILE_ROLES else f"{CAMERA_ROLES[role]} camera"
             problems.append({"text": f"{what} (USB port {busid}) isn't plugged in, so it won't be recorded",
                              "fix": None, "fix_label": ""})
+    if "teleop" in steps and SETTINGS["hand"] == "leap" and SETTINGS["robot"] != "arm_only" \
+            and SETTINGS["hand_mapping"] == "geort" and not geort_model_ok():
+        problems.append({"text": "Hand control is set to a GeoRT model, but none is chosen (or it was deleted): "
+                                 "pick one in the Hand mapping tab. Until then the fingertip targets are used.",
+                         "fix": None, "fix_label": ""})
+    if MAPPING["record"].alive() or MAPPING["test"].alive():
+        problems.append({"text": "A hand recording or test is running (Hand mapping tab). Stop it before starting: "
+                                 "it uses the same glove port as the teleop.", "fix": None, "fix_label": ""})
     if PORTS.stuck():
         problems.insert(0, {"text": f"Docker has stopped forwarding UDP port(s) {', '.join(map(str, PORTS.stuck()))} "
                                     "into the dexcap container, so headset/glove data can't reach the teleop",
@@ -1499,6 +1772,17 @@ def state():
         "teleop": STEPS["teleop"].status,
         "launch_log": list(LAUNCH_LOG),
         "teleop_args": teleop_args(),
+        "hand_mappings": HAND_MAPPINGS,
+        "mapping": {"recordings": hand_recordings(), "models": hand_models(), "geort_installed": GEORT_DIR.exists(),
+                    "glove_users": glove_users(), "teleop_running": STEPS["teleop"].alive() or bool(BUSY["what"]),
+                    "record": MAPPING["record"].progress(), "train": MAPPING["train"].progress(),
+                    "test": MAPPING["test"].progress(),
+                    "test_log": [f"[launcher] {l}" for l in list(MAPPING["test"].log)[-10:]]
+                                + MAPPING["test"].output_lines()[-30:],
+                    "record_log": [f"[launcher] {l}" for l in list(MAPPING["record"].log)[-10:]]
+                                  + MAPPING["record"].output_lines()[-30:],
+                    "train_log": [f"[launcher] {l}" for l in list(MAPPING["train"].log)[-10:]]
+                                 + MAPPING["train"].output_lines()[-60:]},
         "config": config_fields(),
         "config_notes": GROUP_NOTES,
     }
@@ -1566,6 +1850,8 @@ class Handler(BaseHTTPRequestHandler):
                 SETTINGS["hand"] = body["hand"]
             if body.get("robot") in ROBOT_MODES:
                 SETTINGS["robot"] = body["robot"]
+            if body.get("hand_mapping") in HAND_MAPPINGS:
+                SETTINGS["hand_mapping"] = body["hand_mapping"]
             if "data_dir" in body:
                 try:
                     container_path(body["data_dir"])
@@ -1576,6 +1862,17 @@ class Handler(BaseHTTPRequestHandler):
             check_settings()
             save_settings()
             return self._send(200, "{}")
+        if parts == ["api", "finger_length"]:  # allowed while running: the teleop picks it up live
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                SETTINGS["finger_length"] = float(body["finger_length"])
+            except (ValueError, KeyError, TypeError):
+                return self._send(400, "{}")
+            check_settings()
+            save_settings()
+            return self._send(200, json.dumps({"finger_length": SETTINGS["finger_length"]}))
+        if parts[:2] == ["api", "mapping"] and len(parts) == 3:
+            return self._mapping(parts[2])
         if parts == ["api", "browse"]:
             if BUSY["what"] or any(STEPS[k].alive() for k in STEPS):
                 return self._send(409, json.dumps({"error": "stop everything before changing the setup"}))
@@ -1615,6 +1912,71 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._send(404, "{}")
         self._send(200, "{}")
+
+    def _mapping(self, action):
+        """Hand mapping tab: record glove data, train GeoRT models, choose the model the teleop uses."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            return self._send(400, "{}")
+        name = str(body.get("name", ""))
+        rec, train = MAPPING["record"], MAPPING["train"]
+        err = None
+        if action == "record":
+            if not NAME_RE.fullmatch(name):
+                err = "Use a name of letters, numbers, - and _ only (e.g. kirsty_1)."
+            elif glove_users():
+                err = f"Stop {' and '.join(glove_users())} first: only one program can read the glove at a time."
+            elif (GEORT_DIR / "data" / f"{name}.npy").exists():
+                err = f"There is already a recording called {name}; choose another name."
+            else:
+                threading.Thread(target=rec.begin, args=(name,), daemon=True).start()
+        elif action == "record_stop":
+            threading.Thread(target=rec.stop, daemon=True).start()
+        elif action == "train":
+            if not (GEORT_DIR / "data" / f"{name}.npy").exists():
+                err = f"No recording called {name}."
+            elif train.alive():
+                err = "A training is already running; wait for it or stop it."
+            elif rec.alive() and rec.name == name:
+                err = "That recording is still running; stop it first."
+            else:
+                threading.Thread(target=train.begin, args=(name,), daemon=True).start()
+        elif action in ("test", "test_switch"):
+            test = MAPPING["test"]
+            model = str(body.get("model", ""))  # "" is the fingertip targets
+            if model and not (GEORT_DIR / "checkpoint" / model / "last.pth").exists():
+                err = "That model is not there any more."
+            elif action == "test_switch":
+                if test.stage or not test.alive():
+                    err = "The test isn't running yet."
+                else:
+                    threading.Thread(target=test.switch, args=(model,), daemon=True).start()
+            elif SETTINGS["arm"] != "xarm":
+                err = "The test drives the LEAP hand on the xArm's control computer; it isn't set up for the Franka."
+            elif test.alive() or test.stage:
+                err = "The test is already running."
+            elif glove_users():
+                err = f"Stop {' and '.join(glove_users())} first: only one program can read the glove at a time."
+            else:
+                threading.Thread(target=test.begin, args=(model,), daemon=True).start()
+        elif action == "test_stop":
+            threading.Thread(target=MAPPING["test"].end, daemon=True).start()
+        elif action == "train_stop":
+            threading.Thread(target=train.stop, daemon=True).start()
+        elif action == "use":
+            model = str(body.get("model", ""))
+            if STEPS["teleop"].alive() or BUSY["what"]:
+                err = "Stop the teleop before changing the hand mapping (it reads the choice when it starts)."
+            elif model and not (GEORT_DIR / "checkpoint" / model / "last.pth").exists():
+                err = "That model is not there any more."
+            else:
+                SETTINGS["geort_model"] = model
+                SETTINGS["hand_mapping"] = "geort" if model else "fingertips"
+                save_settings()
+        else:
+            return self._send(404, "{}")
+        return self._send(400 if err else 200, json.dumps({"error": err}))
 
     def log_message(self, *args):
         pass
@@ -1685,6 +2047,15 @@ header { display:flex; align-items:center; gap:20px; margin-bottom:16px; flex-wr
 .big.stop { background:var(--dead); }
 .big.outline { background:transparent; color:var(--accent); border:2px solid var(--accent); padding:8px 20px; }
 .big:disabled { opacity:.5; cursor:wait; }
+[hidden] { display:none !important; }  /* .go etc. set display, which would override hidden */
+.maplist { display:flex; flex-direction:column; gap:6px; margin-top:10px; }
+.maprow { display:flex; align-items:center; gap:12px; border:1px solid var(--border); border-radius:8px; padding:8px 12px; flex-wrap:wrap; }
+.maprow.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.maprow .what { flex:1; min-width:180px; } .maprow .what b { font-weight:600; }
+.mapinput { font:inherit; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text); width:220px; }
+.bar { height:8px; border-radius:4px; background:var(--soft); overflow:hidden; margin-top:6px; max-width:420px; }
+.bar > div { height:100%; background:var(--accent); }
+ol.steps { margin:6px 0 0; padding-left:20px; } ol.steps li { margin:2px 0; }
 .banner { border-radius:8px; padding:10px 12px; margin-bottom:12px; }
 .banner.ok { background:color-mix(in srgb, var(--ok) 15%, transparent); }
 .banner.warn { background:color-mix(in srgb, var(--stale) 18%, transparent); }
@@ -1719,7 +2090,7 @@ h2 { font-size:15px; margin:0 0 10px; }
 <main>
 <header>
   <h1>Robot launcher</h1>
-  <nav class="tabs"><button data-tab="teleop">Data collection</button><button data-tab="cameras">Cameras</button><button data-tab="policy">Evaluation</button><button data-tab="settings">Settings</button></nav>
+  <nav class="tabs"><button data-tab="teleop">Data collection</button><button data-tab="cameras">Cameras</button><button data-tab="mapping">Hand mapping</button><button data-tab="policy">Evaluation</button><button data-tab="settings">Settings</button></nav>
 </header>
 
 <div id="message"></div>
@@ -1747,6 +2118,68 @@ h2 { font-size:15px; margin:0 0 10px; }
       <button class="big" id="save-devices">Save</button>
       <span class="hint" id="devices-save-msg"></span>
     </div>
+  </div>
+</section>
+
+<section id="tab-mapping" hidden>
+  <div class="card">
+    <h2 style="margin-top:0">Hand mapping (GeoRT)</h2>
+    <div class="hint">Instead of following fingertip targets, the LEAP hand can follow a model trained on how your hand
+      moves (<a href="https://github.com/facebookresearch/GeoRT" target="_blank">GeoRT</a>, non-commercial licence).
+      Record your hand once, train, then choose the model. The robot is not needed for steps 1 and 2.</div>
+    <div class="hint error" id="geort-missing" hidden>GeoRT is not installed next to this repo (GeoRT folder in the src folder).</div>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">1. Record your hand</h2>
+    <div class="hint">Put on the right glove. Start opens Rokoko streaming. Then, for 2 to 3 minutes:
+      <ol class="steps"><li>open your hand fully and make a fist, slowly and quickly</li>
+      <li>bend each finger on its own</li><li>spread your fingers and close them together</li>
+      <li>touch your thumb to each fingertip (this matters most for grasping)</li>
+      <li>make the grasps you will use: pinch, power grip, holding a cup</li></ol>
+      Keep the movements natural and comfortable. Where your wrist is doesn't matter.</div>
+    <div class="go">
+      <input class="mapinput" id="rec-name" placeholder="name, e.g. kirsty_1" spellcheck="false">
+      <button class="big" id="rec-btn">Start recording</button>
+    </div>
+    <div class="hint" id="rec-msg"></div>
+    <div class="bar" id="rec-bar" hidden><div></div></div>
+    <details class="card" style="margin:12px 0 0"><summary>Recording log</summary><pre id="rec-log"></pre></details>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">2. Train</h2>
+    <div class="hint">Training takes about 10 minutes on this laptop's GPU and can run while you do other things,
+      including teleop. A model is saved after every round, so stopping early still gives a usable model.</div>
+    <div class="maplist" id="rec-list"></div>
+    <div class="hint" id="train-msg"></div>
+    <div class="bar" id="train-bar" hidden><div></div></div>
+    <div class="go" id="train-stop-row" hidden><button class="small" id="train-stop">Stop training</button></div>
+    <details class="card" style="margin:12px 0 0"><summary>Training log</summary><pre id="train-log"></pre></details>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">3. Choose the model for data collection</h2>
+    <div class="hint">The chosen model drives the LEAP hand when Hand control is set to GeoRT model on the
+      Data collection tab. Choose before pressing Start.</div>
+    <div class="maplist" id="model-list"></div>
+    <div class="hint" id="use-msg"></div>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">4. Try it on the LEAP hand</h2>
+    <div class="hint">The LEAP hand follows your right glove with the mapping picked here. No headset or arm needed,
+      and nothing is recorded. Start turns on Rokoko streaming and the LEAP hand; Stop sets the hand back to neutral
+      and turns it off. Try a flat hand, a fist, and pinching your thumb to each finger. You can pick another mapping
+      while the test runs to compare them; this doesn't change the choice for data collection in step 3.</div>
+    <div class="go">
+      <select class="mapinput" id="test-choice" style="width:auto; max-width:100%"></select>
+      <button class="big" id="test-btn">Start test</button>
+    </div>
+    <div class="field" id="test-finger-field">
+      <p class="q">Finger length <span id="test-finger-val"></span></p>
+      <div class="line"><input type="range" id="test-finger-length" min="80" max="200" step="5" style="width:260px"></div>
+      <div class="hint">For the fingertip targets only. The same setting as on the Data collection tab, so it also
+        changes the teleop. Changes apply straight away.</div>
+    </div>
+    <div class="hint" id="test-msg"></div>
+    <details class="card" style="margin:12px 0 0"><summary>Test log</summary><pre id="test-log"></pre></details>
   </div>
 </section>
 
@@ -1781,6 +2214,17 @@ h2 { font-size:15px; margin:0 0 10px; }
     <p class="q">Run</p>
     <div class="seg" data-key="robot" id="modes"></div>
     <div class="hint" id="mode-hint"></div>
+  </div>
+  <div class="field" id="mapping-field">
+    <p class="q">Hand control</p>
+    <div class="seg" data-key="hand_mapping" id="hand-mappings"></div>
+    <div class="hint" id="mapping-hint"></div>
+  </div>
+  <div class="field" id="finger-field">
+    <p class="q">Finger length <span id="finger-val"></span></p>
+    <div class="line"><input type="range" id="finger-length" min="80" max="200" step="5" style="width:260px">
+      <button class="small" id="finger-reset">Back to 100%</button></div>
+    <div class="hint">Makes the robot's fingertip targets reach further from the palm. Raise it if the robot's fingers stay curled when your hand is flat, lower it if they can't close into a fist. 100% is the original setting. Changes apply straight away, also while running.</div>
   </div>
   <div class="field">
     <div class="line"><p class="q" style="margin:0">Recorded cameras and tactile sensors</p>
@@ -1825,7 +2269,7 @@ function showTab(name) {
 document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 let savedTab = "teleop";
 try { savedTab = localStorage.getItem("launcher-tab") || "teleop"; } catch (e) {}
-showTab(["cameras", "policy", "settings"].includes(savedTab) ? savedTab : "teleop");
+showTab(["cameras", "mapping", "policy", "settings"].includes(savedTab) ? savedTab : "teleop");
 
 // Settings tab: built from the server's list; only rebuilt when not being edited
 let configDirty = false;
@@ -1869,6 +2313,134 @@ async function post(path, body) {
   setTimeout(tick, 200);
   return r;
 }
+// ---- Hand mapping tab
+async function mappingPost(action, body, msgId) {
+  const r = await post("mapping/" + action, body);
+  const err = r.ok ? null : ((await r.json().catch(() => ({}))).error || "That didn't work.");
+  const el = document.getElementById(msgId);
+  if (err) { el.textContent = err; el.className = "hint error"; }
+  return !err;
+}
+document.getElementById("rec-btn").addEventListener("click", () => {
+  if (S && S.mapping.record.running) return mappingPost("record_stop", {}, "rec-msg");
+  mappingPost("record", {name: document.getElementById("rec-name").value.trim()}, "rec-msg");
+});
+// The mapping step 4 tries: the step 3 choice until another is picked here
+let testChoice = null;
+const testSelect = document.getElementById("test-choice");
+testSelect.addEventListener("change", () => {
+  testChoice = testSelect.value;
+  const T = S && S.mapping.test;
+  if (T && T.running && !T.stage) mappingPost("test_switch", {model: testChoice}, "test-msg");
+});
+document.getElementById("test-btn").addEventListener("click", () => {
+  const T = S && S.mapping.test;
+  mappingPost(T && (T.running || T.stage) ? "test_stop" : "test", {model: testSelect.value}, "test-msg");
+});
+const testFinger = document.getElementById("test-finger-length");
+const showTestFinger = v => document.getElementById("test-finger-val").textContent = v + "%";
+testFinger.addEventListener("input", () => showTestFinger(testFinger.value));
+testFinger.addEventListener("change", () => post("finger_length", {finger_length: testFinger.value / 100}));
+document.getElementById("train-stop").addEventListener("click", () => mappingPost("train_stop", {}, "train-msg"));
+document.getElementById("rec-list").addEventListener("click", e => {
+  const b = e.target.closest("button[data-train]"); if (b) mappingPost("train", {name: b.dataset.train}, "train-msg");
+});
+document.getElementById("model-list").addEventListener("click", e => {
+  const b = e.target.closest("button[data-use]"); if (b) mappingPost("use", {model: b.dataset.use}, "use-msg");
+});
+const fmtSec = s => s >= 60 ? Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s" : s + " s";
+function setHtml(el, html) { if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; } }
+function renderMapping() {
+  const M = S.mapping, rec = M.record, tr = M.train, T = M.test;
+  // 4. Test
+  const testOn = T.running || !!T.stage;
+  const testBtn = document.getElementById("test-btn");
+  testBtn.textContent = testOn ? "Stop test" : "Start test";
+  testBtn.className = "big" + (testOn ? " stop" : "");
+  const step3 = S.settings.hand_mapping === "geort" ? S.settings.geort_model : "";
+  const choices = [{id: "", name: "No model: fingertip targets"}, ...M.models];
+  if (testChoice === null || !choices.some(c => c.id === testChoice))
+    testChoice = choices.some(c => c.id === step3) ? step3 : "";
+  setHtml(testSelect, choices.map(c => `<option value="${esc(c.id)}">${esc(c.name)}` +
+    (c.id === step3 ? " (chosen in step 3)" : "") + `</option>`).join(""));
+  if (document.activeElement !== testSelect) testSelect.value = testChoice;
+  testSelect.disabled = !!T.stage;
+  document.getElementById("test-finger-field").hidden = testChoice !== "";
+  if (document.activeElement !== testFinger) {
+    testFinger.value = Math.round(S.settings.finger_length * 100);
+    showTestFinger(testFinger.value);
+  }
+  const testOthers = M.glove_users.filter(u => u !== "the hand test");
+  testBtn.disabled = !testOn && testOthers.length > 0;
+  const testMsg = document.getElementById("test-msg");
+  if (testOn) {
+    testMsg.className = "hint" + (T.running && T.glove && T.glove !== "live" ? " error" : "");
+    testMsg.textContent = T.stage || (T.glove === "live" ? `The LEAP hand is following your glove (${T.sent} commands sent).` :
+                                      T.glove || "Loading the model…");
+  } else if (testOthers.length) {
+    testMsg.className = "hint"; testMsg.textContent = `Stop ${testOthers.join(" and ")} to test: only one program can read the glove at a time.`;
+  } else if (testMsg.className !== "hint error" || !testMsg.textContent) {
+    testMsg.className = "hint"; testMsg.textContent = T.result || "";
+  }
+  keepScroll(document.getElementById("test-log"), M.test_log.join("\\n"));
+  document.getElementById("geort-missing").hidden = M.geort_installed;
+  // 1. Record
+  const recBtn = document.getElementById("rec-btn");
+  recBtn.textContent = rec.running ? "Stop recording" : "Start recording";
+  recBtn.className = "big" + (rec.running ? " stop" : "");
+  const others = M.glove_users.filter(u => u !== "the hand recording");
+  recBtn.disabled = !rec.running && others.length > 0;
+  document.getElementById("rec-name").disabled = rec.running;
+  const recMsg = document.getElementById("rec-msg");
+  if (rec.running) {
+    recMsg.className = "hint" + (rec.glove && rec.glove !== "live" ? " error" : "");
+    recMsg.textContent = rec.frames || rec.glove ? `Recording ${rec.name || ""}: ${rec.frames} frames, ${fmtSec(rec.seconds)}` +
+      (rec.glove === "live" ? (rec.seconds >= 120 ? ". That's enough; stop when you've covered everything." : ". Keep moving your hand.") : ` (${rec.glove})`)
+      : "Starting Rokoko streaming and the recorder…";
+  } else if (others.length) {
+    recMsg.className = "hint"; recMsg.textContent = `Stop ${others.join(" and ")} to record: only one program can read the glove at a time.`;
+  } else if (recMsg.className !== "hint error" || !recMsg.textContent) {
+    recMsg.className = "hint"; recMsg.textContent = rec.result || "";
+  }
+  const recBar = document.getElementById("rec-bar");
+  recBar.hidden = !rec.running;
+  recBar.firstElementChild.style.width = Math.min(100, rec.seconds / 180 * 100) + "%";
+  keepScroll(document.getElementById("rec-log"), M.record_log.join("\\n"));
+  // 2. Train
+  setHtml(document.getElementById("rec-list"), M.recordings.length ? M.recordings.map(r =>
+    `<div class="maprow"><div class="what"><b>${esc(r.name)}</b> <span class="hint">${r.frames} frames, ${fmtSec(Math.round(r.seconds))}, recorded ${esc(r.created)}` +
+    (r.uncertain ? " · little finger movement, consider recording again" : "") + `</span></div>` +
+    `<button class="small" data-train="${esc(r.name)}" ${tr.running ? "disabled" : ""}>Train</button></div>`).join("")
+    : '<div class="hint">No recordings yet: record your hand above first.</div>');
+  const trainMsg = document.getElementById("train-msg"), trainBar = document.getElementById("train-bar");
+  trainBar.hidden = !tr.running;
+  document.getElementById("train-stop-row").hidden = !tr.running;
+  if (tr.running) {
+    trainMsg.className = "hint";
+    trainMsg.textContent = `Training ${tr.name || ""}: ` + (tr.stage ? `${tr.stage}, round ${tr.epoch} of ${tr.epochs}` : "starting…");
+    const done = tr.stage.startsWith("Learning the glove") ? 0.5 + tr.epoch / tr.epochs / 2 : tr.epoch / tr.epochs / 2;
+    trainBar.firstElementChild.style.width = (done * 100) + "%";
+  } else if (trainMsg.className !== "hint error" || !trainMsg.textContent) {
+    trainMsg.className = "hint";
+    trainMsg.textContent = tr.result === "done" ? `Training ${tr.name || ""} finished: choose its model below.` : tr.result;
+  }
+  keepScroll(document.getElementById("train-log"), M.train_log.join("\\n"));
+  // 3. Choose
+  const chosen = S.settings.hand_mapping === "geort" ? S.settings.geort_model : "";
+  setHtml(document.getElementById("model-list"),
+    `<div class="maprow ${chosen ? "" : "on"}"><div class="what"><b>No model: fingertip targets</b> <span class="hint">the original mapping, without GeoRT</span></div>` +
+    (chosen ? `<button class="small" data-use="" ${M.teleop_running ? "disabled" : ""}>Use this one</button>` : '<b>In use</b>') + `</div>` +
+    (M.models.length ? M.models.map(m =>
+    `<div class="maprow ${m.id === chosen ? "on" : ""}"><div class="what"><b>${esc(m.name)}</b> <span class="hint">trained ${esc(m.trained)}, ${m.epochs} rounds` +
+    (m.from_glove ? "" : " · not from a glove recording (test model)") + `</span></div>` +
+    (m.id === chosen ? '<b>In use</b>' : `<button class="small" data-use="${esc(m.id)}" ${M.teleop_running ? "disabled" : ""}>Use this one</button>`) + `</div>`).join("")
+    : '<div class="hint">No GeoRT models yet: train one above.</div>'));
+}
+const fingerInput = document.getElementById("finger-length");
+const showFinger = v => document.getElementById("finger-val").textContent = v + "%";
+fingerInput.addEventListener("input", () => showFinger(fingerInput.value));
+fingerInput.addEventListener("change", () => post("finger_length", {finger_length: fingerInput.value / 100}));
+document.getElementById("finger-reset").addEventListener("click", () => post("finger_length", {finger_length: 1.0}));
 document.querySelectorAll(".seg").forEach(seg => seg.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b || b.disabled) return;
   post("settings", {[seg.dataset.key]: b.dataset.val});
@@ -2087,6 +2659,23 @@ async function tick() {
   if (S.settings.arm === "franka") document.getElementById("mode-hint").textContent += (document.getElementById("mode-hint").textContent ? " " : "") +
     "The Franka hand isn't supported by the teleop yet.";
   if (document.activeElement !== dirInput) dirInput.value = S.settings.data_dir;
+  // Only the LEAP hand follows each finger; hidden in Arm only, where the gloves aren't used
+  fill(document.getElementById("hand-mappings"), S.hand_mappings);
+  const gloveHand = S.settings.hand === "leap" && S.settings.robot !== "arm_only";
+  const geortOn = S.settings.hand_mapping === "geort";
+  document.getElementById("mapping-field").hidden = !gloveHand;
+  document.getElementById("finger-field").hidden = !gloveHand || geortOn;
+  const model = S.mapping.models.find(m => m.id === S.settings.geort_model);
+  const mapHint = document.getElementById("mapping-hint");
+  mapHint.className = "hint" + (geortOn && !model ? " error" : "");
+  mapHint.textContent = !geortOn ? "The robot's fingertips follow yours (adjust the reach with Finger length below)." :
+    model ? `Using the model "${model.name}" (trained ${model.trained}). Change it in the Hand mapping tab.` :
+    "No model chosen yet: record and train one in the Hand mapping tab, then press Use this one.";
+  renderMapping();
+  if (document.activeElement !== fingerInput) {
+    fingerInput.value = Math.round(S.settings.finger_length * 100);
+    showFinger(fingerInput.value);
+  }
   dirInput.disabled = document.getElementById("browse").disabled = locked;
   const go = document.getElementById("go");
   go.textContent = S.busy === "starting" ? "Starting…" : S.busy === "stopping" ? "Stopping…" : S.busy === "restarting" ? "Restarting…" :

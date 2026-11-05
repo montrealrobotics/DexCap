@@ -1,0 +1,13 @@
+run failed with error:
+'NoneType' object is not subscriptable
+
+Traceback (most recent call last):
+  File "/workspace/DexCap/scripts/replay_trajectory.py", line 348, in <module>
+    run_trained_agent(args)
+  File "/workspace/DexCap/scripts/replay_trajectory.py", line 273, in run_trained_agent
+    goal_arm_j_, goal_hand_j_ = env.convert_delta_to_joints(goal_arm_, goal_hand_)
+  File "/workspace/DexCap/scripts/replay_trajectory.py", line 154, in convert_delta_to_joints
+    arm_joints, gripper_joints, ee_pose = self.get_robot_states()
+  File "/workspace/DexCap/scripts/replay_trajectory.py", line 132, in get_robot_states
+    right_arm_joints = np.array(robot_last_state["joint_positions"], dtype=np.float32)
+TypeError: 'NoneType' object is not subscriptable

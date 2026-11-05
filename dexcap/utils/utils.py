@@ -44,6 +44,17 @@ def get_logger(name="dexcap"):
         logger.addHandler(ch)
     return logger
 
+def convert_to_hardware(joint_angles):
+    """LEAP joint angles in pybullet order (as the IK solvers and GeoRT give them) -> the hand's motor order
+    and zero position, as sent to the LEAP hand over redis ('right_leap_action')."""
+    real_right_robot_hand_q = np.zeros(16)
+    real_right_robot_hand_q[0:16] = joint_angles[0:16]
+    real_right_robot_hand_q[0:2] = real_right_robot_hand_q[0:2][::-1]
+    real_right_robot_hand_q[4:6] = real_right_robot_hand_q[4:6][::-1]
+    real_right_robot_hand_q[8:10] = real_right_robot_hand_q[8:10][::-1]
+    real_right_robot_hand_q[:16] += np.pi
+    return real_right_robot_hand_q.tolist()
+
 def check_connection(host_name, ip_address, logger=None):
     """Wait for connection to ip address"""
 

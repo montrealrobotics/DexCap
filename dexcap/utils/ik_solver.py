@@ -134,7 +134,8 @@ class LeapHandIKSolver(BaseIKSolver):
             target_q += list(q_slice[4 * i : 4 * (i + 1)])
         return target_q
 
-    def solve_system_world(self, wrist_pos, wrist_orn, tip_poses=None):
+    def solve_system_world(self, wrist_pos, wrist_orn, tip_poses=None, hand_q=None):
+        """hand_q: joint angles from another hand mapping (GeoRT), used instead of the fingertip IK."""
         arm_q = self.solve_arm_ik(
             wrist_pos + wrist_orn.apply(self.right_hand_pos_offset),
             wrist_orn * self.right_hand_orn_offset.inv(),
@@ -152,11 +153,12 @@ class LeapHandIKSolver(BaseIKSolver):
             (hand_orn * self.right_hand_orn_offset).as_quat(),
         )
 
-        hand_q = (
-            self.solve_fingertip_ik(tip_poses)
-            if tip_poses is not None
-            else self.RIGHT_HAND_Q
-        )
+        if hand_q is None:
+            hand_q = (
+                self.solve_fingertip_ik(tip_poses)
+                if tip_poses is not None
+                else self.RIGHT_HAND_Q
+            )
         self.set_joint_positions(self.right_hand, hand_q)
 
         return arm_q, hand_q
