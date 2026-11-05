@@ -205,6 +205,20 @@ def jetson_ip():
     return config_value("xarm", "CTRL_HOST", "CONTROL_COMPUTER_IP") or CONFIG["jetson_host"]
 
 
+def laptop_ip():
+    """This laptop's address on the headset's network, the IP to enter in the headset app. Connecting a UDP
+    socket sends nothing: it only asks Windows which of its addresses it would use to reach the headset."""
+    vr_host = read_vr_host()
+    if not vr_host:
+        return None
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((vr_host, 9))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 def read_vr_host():
     cfg = REPO_DIR / "dexcap" / "configs" / "xarm.yaml"
     try:
@@ -582,6 +596,7 @@ def teleop_args():
     relay = CONFIG["udp_relay"]
     # One Quest IP for both arms (xarm.yaml), so the arm configs can't disagree about the headset
     vr_host = read_vr_host()
+    own_ip = laptop_ip()
     arm_host = ""
     if SETTINGS["arm"] == "xarm":
         arm_host = f"--arm_host {jetson_ip() if SETTINGS['xarm_on'] == 'control' else 'host.docker.internal'} "
@@ -590,7 +605,8 @@ def teleop_args():
                       if busid in DEVICES["video"])
     return (f"--real_robot {real_robot} --use_arm {use_arm} --use_hand {use_hand} --use_gloves {use_hand} "
             f"--pose_port {relay[12346]} --rokoko_port {relay[14043]} "
-            + (f"--vr_host {vr_host} " if vr_host else "") + arm_host + cameras +
+            + (f"--vr_host {vr_host} " if vr_host else "") + (f"--laptop_ip {own_ip} " if own_ip else "")
+            + arm_host + cameras +
             f"--robot_arm {SETTINGS['arm']} --gripper_type {SETTINGS['hand']} "
             f"--hand_tuning {shlex.quote(container_path(HAND_TUNING_FILE))} " + geort_args() +
             f"--data_dir {shlex.quote(container_path(SETTINGS['data_dir']))}")

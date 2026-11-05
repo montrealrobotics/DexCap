@@ -197,6 +197,8 @@ if __name__ == "__main__":
     parser.add_argument("--robot_arm", type=str, default="xarm")
     parser.add_argument("--gripper_type", type=str, default="xarm_g")
     parser.add_argument("--vr_host", type=str, default=None, help="Quest IP, overrides TELEOP.VR_HOST in the config")
+    parser.add_argument("--laptop_ip", type=str, default=None,
+                        help="This laptop's IP, shown as the one to enter in the headset app; overrides LOCAL_HOST.IP_WIFI")
     parser.add_argument("--arm_host", type=str, default=None,
                         help="Where the arm controller runs, overrides CTRL_HOST.IP_ETH (host.docker.internal = "
                              "a container on this laptop)")
@@ -232,6 +234,8 @@ if __name__ == "__main__":
     arm_config = YamlConfig(str(arm_config_file)).as_easydict()
     if args.vr_host:
         ip_config.TELEOP.VR_HOST = args.vr_host
+    if args.laptop_ip:
+        ip_config.LOCAL_HOST.IP_WIFI = args.laptop_ip
     if args.arm_host:
         ip_config.CTRL_HOST.IP_ETH = args.arm_host
     if args.pose_port:
